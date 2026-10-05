@@ -42,6 +42,8 @@ SentinelOps is the answer to that failure:
 
 ## How it works
 
+Full details are in the [design doc](docs/design.md).
+
 ```mermaid
 flowchart LR
     A[Prometheus alert] --> B[Control plane<br/>FastAPI + Postgres]
@@ -146,7 +148,7 @@ make down                                                   # stop everything
 
 - [x] Project skeleton: uv, ruff, pytest, typed settings
 - [x] Demo stack: three services, Postgres, Prometheus, alert rules, load generator
-- [ ] Design doc
+- [x] [Design doc](docs/design.md)
 - [ ] Fault injectors: bad deploy, memory leak (OOM), DB connection exhaustion, slow dependency,
       bad feature flag, missing secret. Some variants include a red-herring deploy.
 - [ ] MCP tool servers: runtime, metrics, logs, git, runbooks
@@ -154,7 +156,7 @@ make down                                                   # stop everything
 - [ ] Typed remediation actions, approval flow, verification, auto-rollback
 - [ ] Benchmark: record and replay runs, scoring, v1 baseline, repeated runs per scenario
 - [ ] Hardening: audit log, budgets and timeouts, model fallback, cost dashboard
-- [ ] Docs: design, deployment guide, limitations, demo video
+- [ ] Docs: deployment guide, limitations, demo video
 
 ## Results
 
