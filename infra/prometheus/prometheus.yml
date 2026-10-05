@@ -1,0 +1,18 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: demo
+    # The apps label their own metrics with `service`; keep those values as-is.
+    honor_labels: true
+    static_configs:
+      - targets: ["gateway:8000"]
+        labels: {service: gateway}
+      - targets: ["orders:8000"]
+        labels: {service: orders}
+      - targets: ["payments:8000"]
+        labels: {service: payments}

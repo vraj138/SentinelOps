@@ -1,4 +1,6 @@
-.PHONY: install test lint format up down
+.PHONY: install test lint format up down ps
+
+COMPOSE := docker compose -f infra/docker-compose.yml
 
 install:
 	uv sync
@@ -11,11 +13,14 @@ lint:
 	uv run ruff format --check .
 
 format:
-	uv run ruff check --fix .
 	uv run ruff format .
+	uv run ruff check --fix .
 
 up:
-	@echo "not implemented yet"
+	APP_VERSION=$$(git rev-parse --short HEAD) $(COMPOSE) up -d --build
 
 down:
-	@echo "not implemented yet"
+	$(COMPOSE) down
+
+ps:
+	$(COMPOSE) ps

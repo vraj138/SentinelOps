@@ -1,0 +1,9 @@
+.git
+.venv
+legacy
+storage
+evals
+**/__pycache__
+.ruff_cache
+.pytest_cache
+.env

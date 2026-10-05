@@ -1,0 +1,98 @@
+# SentinelOps demo stack: gateway -> orders -> payments, plus Postgres and Prometheus.
+# Start with `make up` (tags the image with the current git commit), stop with `make down`.
+name: sentinelops
+
+x-demo-service: &demo-service
+  build:
+    context: ..
+    dockerfile: demo_app/Dockerfile
+    args:
+      APP_VERSION: ${APP_VERSION:-dev}
+  image: sentinelops-demo:${APP_VERSION:-dev}
+  restart: unless-stopped
+  mem_limit: 128m
+  environment: &demo-env
+    APP_VERSION: ${APP_VERSION:-dev}
+    ORDERS_URL: http://orders:8000
+    PAYMENTS_URL: http://payments:8000
+    GATEWAY_URL: http://gateway:8000
+    DATABASE_URL: postgresql://sentinelops:sentinelops@postgres:5432/sentinelops
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+    interval: 5s
+    timeout: 3s
+    retries: 5
+    start_period: 10s
+
+services:
+  gateway:
+    <<: *demo-service
+    command: ["uvicorn", "demo_app.gateway:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports: ["127.0.0.1:8000:8000"]
+    depends_on:
+      orders: {condition: service_healthy}
+
+  orders:
+    <<: *demo-service
+    command: ["uvicorn", "demo_app.orders:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports: ["127.0.0.1:8001:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      payments: {condition: service_healthy}
+
+  payments:
+    <<: *demo-service
+    command: ["uvicorn", "demo_app.payments:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports: ["127.0.0.1:8002:8000"]
+
+  loadgen:
+    <<: *demo-service
+    command: ["python", "-m", "demo_app.loadgen"]
+    mem_limit: 96m
+    environment:
+      <<: *demo-env
+      LOADGEN_RPS: "3"
+    healthcheck:
+      disable: true
+    depends_on:
+      gateway: {condition: service_healthy}
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    mem_limit: 256m
+    environment:
+      POSTGRES_USER: sentinelops
+      POSTGRES_PASSWORD: sentinelops
+      POSTGRES_DB: sentinelops
+    ports: ["127.0.0.1:5432:5432"]
+    volumes:
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "sentinelops", "-d", "sentinelops"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    restart: unless-stopped
+    mem_limit: 256m
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=1d
+      - --web.enable-lifecycle
+    ports: ["127.0.0.1:9090:9090"]
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    depends_on: [gateway, orders, payments]
+
+volumes:
+  postgres-data:
