@@ -14,9 +14,6 @@ RUN uv sync --frozen --no-dev --no-install-project
 
 COPY demo_app ./demo_app
 
-ARG APP_VERSION=dev
-ENV APP_VERSION=$APP_VERSION
-
 RUN useradd --no-create-home --uid 10001 app
 USER app
 

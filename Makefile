@@ -1,4 +1,4 @@
-.PHONY: install test lint format up down ps
+.PHONY: install test lint format env up down ps faults fault reset
 
 COMPOSE := docker compose -f infra/docker-compose.yml
 
@@ -16,11 +16,24 @@ format:
 	uv run ruff format .
 	uv run ruff check --fix .
 
-up:
-	APP_VERSION=$$(git rev-parse --short HEAD) $(COMPOSE) up -d --build
+env:
+	uv run python -m faults init
 
-down:
+up: env
+	IMAGE_TAG=$$(git rev-parse --short HEAD) $(COMPOSE) up -d --build
+
+down: env
 	$(COMPOSE) down
 
-ps:
+ps: env
 	$(COMPOSE) ps
+
+faults:
+	uv run python -m faults list
+
+fault: env
+	@test -n "$(NAME)" -a -n "$(VARIANT)" || (echo "usage: make fault NAME=bad_deploy VARIANT=a" && exit 1)
+	uv run python -m faults inject $(NAME)/$(VARIANT)
+
+reset:
+	uv run python -m faults reset

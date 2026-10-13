@@ -1,22 +1,23 @@
 # SentinelOps demo stack: gateway -> orders -> payments, plus Postgres and Prometheus.
 # Start with `make up` (tags the image with the current git commit), stop with `make down`.
+# Release settings come from the deploy repo in storage/deploy-repo (see faults/deploy_repo.py).
 name: sentinelops
 
 x-demo-service: &demo-service
   build:
     context: ..
     dockerfile: demo_app/Dockerfile
-    args:
-      APP_VERSION: ${APP_VERSION:-dev}
-  image: sentinelops-demo:${APP_VERSION:-dev}
+  image: sentinelops-demo:${IMAGE_TAG:-dev}
   restart: unless-stopped
   mem_limit: 128m
+  memswap_limit: 128m  # no swap: a leak ends in an OOM kill, like on a real server
+  volumes:
+    - ../storage/flags:/flags:ro
   environment: &demo-env
-    APP_VERSION: ${APP_VERSION:-dev}
     ORDERS_URL: http://orders:8000
     PAYMENTS_URL: http://payments:8000
     GATEWAY_URL: http://gateway:8000
-    DATABASE_URL: postgresql://sentinelops:sentinelops@postgres:5432/sentinelops
+    DATABASE_URL: postgresql://orders_app:orders_app@postgres:5432/sentinelops
   healthcheck:
     test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
     interval: 5s
@@ -28,6 +29,7 @@ services:
   gateway:
     <<: *demo-service
     command: ["uvicorn", "demo_app.gateway:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: ../storage/deploy-repo/services/gateway.env
     ports: ["127.0.0.1:8000:8000"]
     depends_on:
       orders: {condition: service_healthy}
@@ -35,6 +37,7 @@ services:
   orders:
     <<: *demo-service
     command: ["uvicorn", "demo_app.orders:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: ../storage/deploy-repo/services/orders.env
     ports: ["127.0.0.1:8001:8000"]
     depends_on:
       postgres: {condition: service_healthy}
@@ -43,12 +46,17 @@ services:
   payments:
     <<: *demo-service
     command: ["uvicorn", "demo_app.payments:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: ../storage/deploy-repo/services/payments.env
+    volumes:
+      - ../storage/flags:/flags:ro
+      - ../storage/provider:/provider:ro
     ports: ["127.0.0.1:8002:8000"]
 
   loadgen:
     <<: *demo-service
     command: ["python", "-m", "demo_app.loadgen"]
     mem_limit: 96m
+    memswap_limit: 96m
     environment:
       <<: *demo-env
       LOADGEN_RPS: "3"
@@ -59,6 +67,7 @@ services:
 
   postgres:
     image: postgres:16-alpine
+    command: ["postgres", "-c", "max_connections=40"]
     restart: unless-stopped
     mem_limit: 256m
     environment:

@@ -98,7 +98,8 @@ loadgen ──► gateway ──► orders ──► payments
 - **loadgen** sends steady checkout traffic so there are always real metrics.
 - **Every image is tagged with its git commit**, so a deploy is a real commit plus a new image
   tag. That makes "what changed?" an answerable question.
-- **Starter alert rules:** `ServiceDown`, `HighErrorRate` (>5% 5xx) and `HighLatencyP95` (>1 s).
+- **Alert rules:** `ServiceDown`, `HighErrorRate` (>5% 5xx), `HighLatencyP95` (>1 s),
+  `HighMemoryUsage` (>100 MiB of the 128 MiB limit) and `FrequentRestarts` (crash loops).
 - **Every container has a memory limit.** The whole stack idles at about 365 MB, so it fits
   comfortably on an 8 GB laptop.
 

@@ -80,11 +80,13 @@ reproducible.
   it. A deploy is a real commit plus a new tag, so "what changed recently?" has a factual answer.
 - **Failures carry their cause.** An upstream failure becomes a 502 whose body names the failing
   dependency, and the error is logged. The stack never hides evidence the agent will need.
-- **Prometheus** scrapes every 5 s. Starter rules are `ServiceDown`, `HighErrorRate` (>5% 5xx for
-  1 min) and `HighLatencyP95` (>1 s for 1 min).
-- **Memory limits** on every container keep the stack at about 365 MB at idle. They also make the
-  out-of-memory fault realistic, because a leak hits a real limit and the container is
-  OOM-killed.
+- **Prometheus** scrapes every 5 s. Rules: `ServiceDown`, `HighErrorRate` (>5% 5xx for 1 min),
+  `HighLatencyP95` (>1 s for 1 min), `HighMemoryUsage` (>100 MiB for 30 s) and
+  `FrequentRestarts` (3+ restarts in 15 min, so a deploy plus a rollback doesn't trigger it on
+  its own).
+- **Memory limits** (with swap disabled) on every container keep the stack at about 365 MB at
+  idle. They also make the out-of-memory fault realistic, because a leak hits a real limit
+  and the container is OOM-killed.
 
 ### 3.2 Incident lifecycle
 
@@ -190,19 +192,28 @@ the benchmark can report it.
 
 ## 7. Evaluation plan
 
-**Fault scenarios:** six fault types with two or three variants each.
+**Fault scenarios:** six fault types, each triggered by a realistic change rather than a
+"fail" switch. Each one comes with an answer key written before the agent runs. The key gives
+the root cause, the key evidence, a correct action (full credit), any acceptable stopgaps
+(partial credit), and the alerts that should fire.
 
-| Fault | Expected signal | Correct remediation |
-|---|---|---|
-| Bad deploy (5xx) | Error rate rises right after a version change | `rollback` |
-| Memory leak | Memory climbs, OOM kills, restarts | `rollback` or `restart` |
-| DB connection exhaustion | Orders errors, Postgres connection errors in logs | `restart` or `set_flag` |
-| Slow dependency | p95 latency rises across the chain | Depends on the variant |
-| Bad feature flag | Errors start right after a flag change | `set_flag` |
-| Missing secret | Crash loop at startup | Escalate (it needs a human) |
+| Fault | How it's injected | Expected signal | Correct action (partial credit) |
+|---|---|---|---|
+| Bad deploy | payments release enables a buggy fraud check | 5xx rise after a version change; `KeyError` in logs | `rollback` payments |
+| Memory leak | orders release removes the receipt cache limit | Memory climbs, `HighMemoryUsage`, OOM kill (exit 137) and restart | `rollback` orders (`restart`) |
+| DB connection exhaustion | orders release leaks one connection per request | Postgres connection-slot errors; orders and gateway 5xx | `rollback` orders (`restart`) |
+| Slow dependency | the external payment provider slows to 1.5 s (no deploy involved) | p95 latency rises across the chain; no errors | `escalate` |
+| Bad feature flag | `checkout_v2_pricing` turned on | gateway 5xx after a logged flag change; orders returns 422 | `set_flag` back to off |
+| Missing secret | payments release removes `PAYMENTS_API_KEY` | payments crash-loops; `ServiceDown`; startup error names the key | `rollback` payments |
 
-At least one variant of each type includes a **red herring**: an unrelated deploy around the
-same time. That tests whether the agent reasons from evidence or blames the most recent change.
+Some variants add a **red herring**: a harmless deploy to a different service around the same
+time. That tests whether the agent reasons from evidence or blames the most recent change. The
+slow-dependency fault is the strongest version of this test: nothing in our change history
+caused it, so rolling back any deploy is wrong.
+
+**Limitations of the faults:** bad deploys are configuration changes in a GitOps deploy repo,
+not code changes. Scenarios run one at a time, and alerts need about a minute to clear between
+runs. Timing-based alerts are sensitive to host load, so runs record host conditions.
 
 **Record and replay:** live runs record every tool response. Replay mode re-runs the agent
 against those recordings without the stack running. Replay is cheap and repeatable, so it also

@@ -31,3 +31,23 @@ groups:
           severity: warning
         annotations:
           summary: "{{ $labels.service }} p95 latency is {{ $value | humanizeDuration }}"
+
+      - alert: HighMemoryUsage
+        # Demo containers have a 128 MiB limit; 100 MiB leaves little headroom.
+        expr: process_resident_memory_bytes{job="demo"} > 100 * 1024 * 1024
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} is using {{ $value | humanize1024 }}B of memory"
+
+      - alert: FrequentRestarts
+        # app_start_time_seconds changes on every restart. A deploy plus a rollback is two;
+        # three or more in 15 minutes means the service keeps crashing (e.g. OOM kills).
+        # (process_start_time_seconds is not used: it is derived from the VM boot time and
+        # jumps when the VM clock is corrected, which looks like a restart.)
+        expr: changes(app_start_time_seconds{job="demo"}[15m]) > 2
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} restarted {{ $value }} times in the last 15 minutes"

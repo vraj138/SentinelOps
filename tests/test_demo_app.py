@@ -31,6 +31,12 @@ class FakeConnection:
     def fetchone(self) -> tuple[int]:
         return (42,)
 
+    def commit(self) -> None:
+        self.queries.append(("COMMIT", None))
+
+    def rollback(self) -> None:
+        self.queries.append(("ROLLBACK", None))
+
 
 @pytest.fixture
 def override() -> Iterator[Callable[[FastAPI, Callable[..., Any], Any], None]]:
@@ -63,6 +69,7 @@ def test_metrics_report_requests_and_build_info(name: str) -> None:
 
     assert f'http_requests_total{{route="/health",service="{name}",status="200"}}' in body
     assert f'app_build_info{{service="{name}",version="dev"}} 1.0' in body
+    assert f'app_start_time_seconds{{service="{name}"}}' in body
 
 
 def test_payments_returns_charge() -> None:
@@ -104,12 +111,17 @@ def test_orders_saves_and_charges(override: Callable[..., None]) -> None:
 def test_orders_returns_502_when_payments_fails(override: Callable[..., None]) -> None:
     db = FakeConnection()
     override(orders.app, orders.get_db, db)
-    override(orders.app, orders.get_payments_client, mock_client(lambda r: httpx.Response(503)))
+    override(
+        orders.app,
+        orders.get_payments_client,
+        mock_client(lambda r: httpx.Response(503, text="provider down")),
+    )
 
     response = TestClient(orders.app).post("/orders", json={})
 
     assert response.status_code == 502
-    assert "payments unavailable" in response.json()["detail"]
+    assert "503" in response.json()["detail"]
+    assert "provider down" in response.json()["detail"]
     assert len(db.queries) == 1
 
 
