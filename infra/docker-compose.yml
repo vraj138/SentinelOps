@@ -65,6 +65,25 @@ services:
     depends_on:
       gateway: {condition: service_healthy}
 
+  event-recorder:
+    # Docker keeps only its last 256 events, and health checks flood them within a minute.
+    # This records container lifecycle events (not health checks) so crashes and OOM kills
+    # are still visible when someone investigates later.
+    image: docker:27-cli
+    restart: unless-stopped
+    mem_limit: 48m
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ../storage/events:/events
+    command:
+      - sh
+      - -c
+      - >-
+        docker events --format '{{json .}}' --filter type=container
+        --filter event=create --filter event=start --filter event=restart --filter event=die
+        --filter event=oom --filter event=kill --filter event=stop --filter event=destroy
+        >> /events/containers.jsonl
+
   postgres:
     image: postgres:16-alpine
     command: ["postgres", "-c", "max_connections=40"]

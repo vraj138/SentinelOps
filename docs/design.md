@@ -142,13 +142,22 @@ instructions. Defenses:
 domain becomes a separate, testable server that could be reused by another MCP client. The
 official Python SDK is used for both the servers and the client.
 
-| Server | Purpose (read-only) | Backend now | Could be swapped for |
+| Server | Tools (all read-only) | Backend now | Could be swapped for |
 |---|---|---|---|
-| runtime | Container status, restarts, OOM kills, image tags | Docker API | Kubernetes API |
-| metrics | PromQL queries and current alerts | Prometheus HTTP API | Any PromQL-compatible store |
-| logs | Recent logs per service, filtered and capped | Docker logs | Loki, CloudWatch |
-| git | Recent commits and diffs for deployed versions | Local git repo | GitHub API |
-| runbooks | Search operational runbooks | RAG over markdown (reused from v1, with the v1 bugs fixed) | Any document store |
+| metrics | `query_metrics`, `query_metrics_range`, `list_alerts` | Prometheus HTTP API | Any PromQL-compatible store |
+| runtime | `list_containers` (whitelisted fields only), `container_events` (start, die + exit code, oom) | docker CLI + event log | Kubernetes API |
+| logs | `read_logs` (filtered, capped, redacted) | docker logs | Loki, CloudWatch |
+| changes | `list_deploys`, `show_deploy`, `get_feature_flags` | the deploy repo only (never the main repo, which holds the answer keys) | GitHub API, a flag service |
+| runbooks | `search_runbooks`, `read_runbook` | keyword search over `docs/runbooks/*.md` | Vector search, a wiki |
+
+Notes from building it:
+- **Docker keeps only its last 256 events**, and health checks fill that within about a
+  minute. A small `event-recorder` container appends container lifecycle events to
+  `storage/events/containers.jsonl`, so an OOM kill is still visible later.
+- **Runbooks use keyword search, not v1's embeddings.** With six short runbooks it finds the
+  right one every time (tested), and needs no vector store or second API key.
+- **Every result is redacted** (`*KEY*`, `*PASSWORD*`, `*TOKEN*`, URL credentials) and
+  size-capped, and every failure comes back to the model as an explicit error.
 
 **Adapter rule:** each server talks to its backend through a small interface (for example
 `RuntimeBackend`), and the backend is chosen by configuration. Adding Kubernetes means writing a

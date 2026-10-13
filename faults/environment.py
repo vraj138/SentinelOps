@@ -197,7 +197,7 @@ class Environment:
             self.repo.revert(change.commit)
             self.runtime.recreate(change.service)
         elif change.kind == "flag" and change.flag and change.previous_value is not None:
-            self.flags.set(change.flag, change.previous_value, "fault-reset")
+            self.flags.set(change.flag, change.previous_value, "oncall")
         elif change.kind == "provider" and change.previous_latency_ms is not None:
             self.provider.set_latency(change.previous_latency_ms)
         else:

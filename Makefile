@@ -1,4 +1,4 @@
-.PHONY: install test lint format env up down ps faults fault reset
+.PHONY: install test lint format env up down ps faults fault reset investigate
 
 COMPOSE := docker compose -f infra/docker-compose.yml
 
@@ -37,3 +37,6 @@ fault: env
 
 reset:
 	uv run python -m faults reset
+
+investigate:
+	uv run python -m sentinelops.investigate $(ARGS)
