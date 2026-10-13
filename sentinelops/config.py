@@ -21,7 +21,11 @@ class Settings(BaseSettings):
     anthropic_api_key: SecretStr | None = None
     openai_api_key: SecretStr | None = None
     prometheus_url: str = "http://localhost:9090"
-    database_url: str | None = None
+    # The control plane's own database (not the demo app's Postgres, which faults overload).
+    controlplane_database_url: str = (
+        "postgresql://sentinelops:sentinelops@localhost:5433/sentinelops"
+    )
+    controlplane_url: str = "http://localhost:8080"
 
     # Tool servers. The agent's tools may only see these locations.
     deploy_repo_path: Path = ROOT / "storage" / "deploy-repo"

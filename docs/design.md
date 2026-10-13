@@ -110,8 +110,36 @@ OPEN → INVESTIGATING → PROPOSED → APPROVED → EXECUTING → VERIFYING →
 State transitions are enforced in the control plane, not by the model. The model can only *ask*
 for the next step; the state machine decides whether that step is allowed.
 
-**Alert intake (planned):** Alertmanager sends a webhook to the control plane. Alerts that arrive
-close together are grouped into one incident (see §8, alert cascades).
+**Alert intake:** incidents are opened from the firing Prometheus alerts by `make investigate`
+(agent) or the incidents CLI (operator). The Alertmanager webhook was cut for time.
+
+### 3.3 Control plane and remediation (built)
+
+- **Own database.** Incidents live in a separate Postgres (`controlplane-db`), not the demo
+  app's. The DB-exhaustion fault fills the demo Postgres; the control plane must still be able
+  to record an approval during that incident.
+- **Compare-and-set transitions.** Every state change is `UPDATE ... WHERE state = <expected>`,
+  so an approved action can't execute twice and illegal transitions are refused.
+- **Resolve, then approve.** A proposal ("rollback payments") is resolved into one exact change:
+  the deploy-repo commit being undone, the before/after settings (secrets redacted), and the
+  repo HEAD. The SHA-256 of that payload is the fingerprint the approval is bound to. At
+  execution the action is resolved again; if the fingerprint differs (someone deployed in
+  between), execution is refused and the incident escalates.
+- **No "undo of an undo".** Rollback refuses when the service's latest change is itself a
+  rollback or restore, because undoing it would re-apply an older, possibly bad, release.
+- **Verification checks the original symptoms.** After a 30 s settle, every service that alerted
+  (plus the one acted on) must be up with a 5xx ratio under 5% over 30 s, and p95 / memory
+  checks are added for latency / memory alerts. It polls for up to 3 minutes. Alert state is not
+  used because alerts clear 60-90 s late. Checking only the acted-on service would pass a wrong
+  rollback: in the red-herring scenario the rolled-back gateway is healthy while errors continue.
+- **Auto-rollback.** If verification fails, the recorded inverse runs (restore the previous
+  release file, or the previous flag value) and the incident escalates.
+- **Approval lives only in the control plane** (web page and CLI), never as an agent tool.
+
+Verified live (no LLM needed, operator-proposed actions): the right rollback of a bad payments
+release resolved in 36 s; rolling back the gateway decoy instead failed verification (errors
+stayed at ~17.5%), was undone automatically, and escalated; an approval made stale by a later
+deploy was refused without touching anything.
 
 ## 4. Safety design
 
@@ -121,9 +149,9 @@ access. Safety comes from structure that the model cannot bypass.
 | Control | Protects against | How it's enforced |
 |---|---|---|
 | Read-only diagnostics | Investigation changing production | The diagnostic MCP servers expose only read operations. Write paths are not in that code at all. |
-| Typed actions only | Arbitrary or destructive commands | Actions are Pydantic models (`rollback`, `restart`, `scale`, `set_flag`) with validated arguments. There is no shell tool and never `shell=True`. |
+| Typed actions only | Arbitrary or destructive commands | Actions are Pydantic models (`rollback`, `restart`, `set_flag`) with validated arguments. There is no shell tool and never `shell=True`. |
 | Policy gate | Calling the right tool at the wrong time, or with unsafe arguments | Every tool call is checked against the incident state and argument limits (for example, scaling within set bounds) before it runs. |
-| Human approval | The agent acting on a wrong diagnosis | Planned: the approver, time, and a hash of the exact action payload are recorded. Execution refuses if the payload differs from what was approved. |
+| Human approval | The agent acting on a wrong diagnosis | The approver, time, and a hash of the exact action payload are recorded. Execution refuses if the payload differs from what was approved. |
 | Dry run | Surprises at execution time | Each action describes what it will change before approval. |
 | Verification and auto-rollback | A fix that doesn't work or makes things worse | Each action defines a PromQL health check. If it fails, the action's inverse runs and the incident escalates. |
 | Audit log | Untraceable decisions | Every LLM call and tool call is recorded with inputs, outputs, timing, tokens and cost. |
@@ -256,8 +284,8 @@ cause only. Each scenario runs three times, and results are reported with run co
   estimated.
 - **Rollback is not always safe**, for example after a database migration. Each action declares
   whether it can be reversed; irreversible actions are out of scope for this version.
-- **Open:** Alertmanager webhook or polling Prometheus? The plan is the webhook, because it's the
-  standard integration point.
+- **Alert intake** is a poll of Prometheus when an incident is opened; an Alertmanager webhook
+  was cut for time and is the natural next step.
 
 ## 9. Decisions log
 

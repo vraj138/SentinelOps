@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from faults.deploy_repo import BASE_RELEASES, DeployRepo, DeployRepoError, bump_patch
+from sentinelops.stack.deploy_repo import BASE_RELEASES, DeployRepo, DeployRepoError, bump_patch
 
 
 def git_log(repo: DeployRepo) -> list[str]:

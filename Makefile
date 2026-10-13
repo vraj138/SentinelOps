@@ -1,4 +1,4 @@
-.PHONY: install test lint format env up down ps faults fault reset investigate
+.PHONY: install test lint format env up down ps faults fault reset investigate controlplane incidents
 
 COMPOSE := docker compose -f infra/docker-compose.yml
 
@@ -40,3 +40,9 @@ reset:
 
 investigate:
 	uv run python -m sentinelops.investigate $(ARGS)
+
+controlplane:
+	uv run uvicorn --factory sentinelops.controlplane.web:main_app --host 127.0.0.1 --port 8080
+
+incidents:
+	uv run python -m sentinelops.incidents $(ARGS)

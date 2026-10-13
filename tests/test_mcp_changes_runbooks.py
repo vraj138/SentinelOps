@@ -5,14 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from faults.deploy_repo import DeployRepo
-from faults.flags import FlagFile
 from mcp_servers.changes import ChangesBackend
 from mcp_servers.changes import build_server as build_changes
 from mcp_servers.common import ToolError
 from mcp_servers.runbooks import RunbookLibrary
 from mcp_servers.runbooks import build_server as build_runbooks
 from sentinelops.config import Settings
+from sentinelops.stack.deploy_repo import DeployRepo
+from sentinelops.stack.flags import FlagFile
 from tests.conftest import CallTool, text_of
 
 

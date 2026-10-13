@@ -103,6 +103,25 @@ services:
       timeout: 3s
       retries: 10
 
+  controlplane-db:
+    # SentinelOps' own state (incidents, approvals). Separate from the demo Postgres, which
+    # the DB-exhaustion fault fills: the control plane must keep working during that incident.
+    image: postgres:16-alpine
+    restart: unless-stopped
+    mem_limit: 128m
+    environment:
+      POSTGRES_USER: sentinelops
+      POSTGRES_PASSWORD: sentinelops
+      POSTGRES_DB: sentinelops
+    ports: ["127.0.0.1:5433:5432"]
+    volumes:
+      - controlplane-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "sentinelops", "-d", "sentinelops"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   prometheus:
     image: prom/prometheus:v3.5.0
     restart: unless-stopped
@@ -124,3 +143,4 @@ services:
 
 volumes:
   postgres-data:
+  controlplane-data:

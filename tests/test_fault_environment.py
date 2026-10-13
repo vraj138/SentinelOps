@@ -5,15 +5,11 @@ from pathlib import Path
 import pytest
 
 from faults import registry
-from faults.deploy_repo import BASE_RELEASES, DeployRepo
-from faults.environment import (
-    ContainerRuntimeError,
-    Environment,
-    FaultAlreadyActive,
-    tag_from_image,
-)
-from faults.flags import BASE_FLAGS, FlagFile
+from faults.environment import Environment, FaultAlreadyActive
 from faults.provider import ProviderFile
+from sentinelops.stack.deploy_repo import BASE_RELEASES, DeployRepo
+from sentinelops.stack.flags import BASE_FLAGS, FlagFile
+from sentinelops.stack.runtime import ContainerRuntimeError, tag_from_image
 
 
 class FakeRuntime:
@@ -24,6 +20,9 @@ class FakeRuntime:
     def recreate(self, service: str) -> None:
         if self.fail_on_call is not None and len(self.recreated) + 1 == self.fail_on_call:
             raise RuntimeError(f"docker failed for {service}")
+        self.recreated.append(service)
+
+    def restart(self, service: str) -> None:
         self.recreated.append(service)
 
 

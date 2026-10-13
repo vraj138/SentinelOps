@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from demo_app.common import FeatureFlags
-from faults.flags import BASE_FLAGS, FlagFile
+from sentinelops.stack.flags import BASE_FLAGS, FlagFile
 
 
 def test_init_creates_base_flags_once(tmp_path: Path) -> None:

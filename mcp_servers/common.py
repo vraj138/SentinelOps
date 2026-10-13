@@ -26,6 +26,26 @@ def redact(text: str) -> str:
     return _URL_CREDENTIALS.sub(r"\1:[redacted]@", text)
 
 
+_SECRET_NAME = re.compile(r"(?i)(KEY|SECRET|PASSWORD|PASSWD|TOKEN)")
+
+
+def mask_secrets(data: Any) -> Any:
+    """Copy of `data` with the values of secret-looking keys (`*KEY*`, `*TOKEN*`...) masked.
+
+    Use for structured data; `redact` handles free text like logs and diffs.
+    """
+    if isinstance(data, dict):
+        return {
+            k: "[redacted]"
+            if _SECRET_NAME.search(str(k)) and not isinstance(v, (dict, list))
+            else mask_secrets(v)
+            for k, v in data.items()
+        }
+    if isinstance(data, list):
+        return [mask_secrets(v) for v in data]
+    return data
+
+
 def cap(text: str, limit: int = MAX_RESULT_CHARS) -> str:
     """Truncate `text` to `limit` characters, saying how much was cut."""
     if len(text) <= limit:
@@ -45,4 +65,4 @@ def check_service(service: str) -> str:
     return service
 
 
-__all__ = ["SERVICES", "ToolError", "cap", "check_service", "redact", "to_result"]
+__all__ = ["SERVICES", "ToolError", "cap", "check_service", "mask_secrets", "redact", "to_result"]

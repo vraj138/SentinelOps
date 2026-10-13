@@ -18,27 +18,31 @@ and used as the baseline in evals. Do not modify `legacy/`.
 
 ## Architecture
 ```
-Prometheus alert ─► control plane (FastAPI + Postgres incident state machine)
-                         │
-                         ▼
-                  agent loop (Claude primary, OpenAI fallback)
+Prometheus alerts ─► control plane (FastAPI web UI/API + its own Postgres; incident state machine)
+                         │                         ▲ human approves the exact, fingerprinted action
+                         ▼                         │
+                  agent loop (Claude primary, OpenAI fallback) ──► cited RCA + proposed action
                          │  every tool call goes through the policy gate + audit log
                          ▼
-     MCP servers: runtime (Docker) · metrics (PromQL) · logs · git · runbooks (RAG)
+     MCP servers (read-only): metrics (PromQL) · runtime (Docker + event log) · logs ·
+                              changes (deploy repo + feature flags) · runbooks (keyword search)
 ```
 Incident states: OPEN → INVESTIGATING → PROPOSED → APPROVED → EXECUTING → VERIFYING →
-RESOLVED | ESCALATED
+RESOLVED | ESCALATED. Typed actions: `rollback`, `restart`, `set_flag` (`scale` is out of scope).
+The control-plane Postgres is separate from the demo app's Postgres, which faults overload.
+A deploy is a commit to the local deploy repo (`storage/deploy-repo`) plus a container recreate.
 
 ## Repo layout
 ```
-sentinelops/          # main Python package (control plane, agent, policy, evals)
-mcp_servers/          # one MCP server per tool domain
-demo_app/             # gateway, orders, payments: small FastAPI services we break on purpose
-infra/                # docker-compose.yml, prometheus config, alert rules
-faults/               # fault injectors, one module per scenario
+sentinelops/          # main package: agent/, controlplane/, stack/ (deploy repo, flags, runtime)
+mcp_servers/          # one read-only MCP server per tool domain
+demo_app/             # gateway, orders, payments, loadgen: FastAPI services we break on purpose
+infra/                # docker-compose.yml, prometheus config + alert rules, postgres init
+faults/               # fault injectors and answer keys (never visible to the agent)
 evals/                # scenarios, recordings (replay), results
 tests/
-docs/                 # design.md, limitations.md
+docs/                 # design.md, limitations.md, runbooks/
+storage/              # local state, git-ignored: deploy repo, flags, events, runs (audit logs)
 legacy/v1-incidentpilot/
 ```
 

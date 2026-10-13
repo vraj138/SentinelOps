@@ -4,10 +4,10 @@ import argparse
 import sys
 
 from faults import registry
-from faults.deploy_repo import DeployRepo
 from faults.environment import Environment, FaultAlreadyActive
-from faults.flags import FlagFile
 from faults.provider import ProviderFile
+from sentinelops.stack.deploy_repo import DeployRepo
+from sentinelops.stack.flags import FlagFile
 
 
 def init() -> None:
@@ -33,7 +33,9 @@ def inject(scenario_id: str) -> None:
 
 def reset() -> None:
     undone = Environment().reset()
-    print(f"reset {undone.scenario_id}" if undone else "nothing to reset")
+    if undone:
+        print(f"cleared active scenario {undone.scenario_id}")
+    print("stack is at baseline")
 
 
 def status() -> None:

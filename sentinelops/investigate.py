@@ -9,14 +9,11 @@ import asyncio
 import json
 import os
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 
 import anthropic
 import openai
 
-from mcp_servers.common import ToolError
-from mcp_servers.metrics import PrometheusBackend
 from sentinelops.agent.anthropic_llm import AnthropicLLM
 from sentinelops.agent.audit import AuditLog
 from sentinelops.agent.investigator import Budget, InvestigationResult, Investigator
@@ -25,24 +22,9 @@ from sentinelops.agent.openai_llm import OpenAILLM
 from sentinelops.agent.policy import PolicyGate
 from sentinelops.agent.toolhub import ToolHub, stdio_servers
 from sentinelops.config import Settings
-
-
-def alert_context(settings: Settings) -> str:
-    """Describe the firing alerts. If Prometheus can't be reached, say so plainly."""
-    try:
-        alerts = PrometheusBackend(settings.prometheus_url).alerts()
-    except ToolError as exc:
-        return f"Could not fetch alerts: {exc}. Investigate with the tools that work."
-    firing = [a for a in alerts if a.get("state") == "firing"]
-    if not firing:
-        return "No alerts are firing right now. Check whether anything is wrong."
-    lines = [
-        f"- {a['labels'].get('alertname')} on {a['labels'].get('service')} since "
-        f"{a.get('activeAt')}: {a.get('annotations', {}).get('summary', '')}"
-        for a in firing
-    ]
-    return "Firing alerts:\n" + "\n".join(lines)
-
+from sentinelops.controlplane import build_control_plane
+from sentinelops.controlplane.alerts import firing_alerts
+from sentinelops.controlplane.models import State
 
 CREDENTIAL_ENV_VARS = (
     "ANTHROPIC_API_KEY",
@@ -74,6 +56,7 @@ def build_llm(settings: Settings, audit: AuditLog) -> FallbackLLM:
 
 
 async def investigate(settings: Settings, context: str, run_id: str) -> InvestigationResult:
+    """Run the agent; everything it does is written to storage/runs/<run_id>/audit.jsonl."""
     run_dir = settings.runs_dir / run_id
     audit = AuditLog(run_dir / "audit.jsonl")
     budget = Budget(
@@ -126,20 +109,29 @@ def main() -> None:
             "error: no Anthropic credentials found. Set ANTHROPIC_API_KEY in .env "
             "(see .env.example) or run `ant auth login`."
         )
-    run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    context = args.alert or alert_context(settings)
+    context, alerts = firing_alerts(settings.prometheus_url)
+    context = args.alert or context
     print(context)
+    plane = build_control_plane(settings)
+    incident = plane.open(context, alerts)
+    plane.start_investigation(incident.id)
     try:
-        result = asyncio.run(investigate(settings, context, run_id))
+        result = asyncio.run(investigate(settings, context, incident.id))
     except anthropic.AuthenticationError:
+        plane.escalate(incident.id, State.INVESTIGATING, "no valid Anthropic credentials")
         sys.exit(
             "error: no valid Anthropic credentials. Set ANTHROPIC_API_KEY in .env "
             "(see .env.example) or run `ant auth login`."
         )
     except LLMUnavailable as exc:
+        plane.escalate(incident.id, State.INVESTIGATING, f"no model provider available: {exc}")
         sys.exit(f"error: no model provider available: {exc}")
-    print_result(result, str(settings.runs_dir / run_id))
-    print(json.dumps({"run_id": run_id, "status": result.status}))
+    print_result(result, str(settings.runs_dir / incident.id))
+    incident = plane.record_investigation(incident.id, result)
+    print(f"\nincident {incident.id}: {incident.state}")
+    if incident.state == State.PROPOSED:
+        print(f"review and approve: {settings.controlplane_url}/incidents/{incident.id}")
+    print(json.dumps({"incident": incident.id, "state": incident.state, "status": result.status}))
 
 
 if __name__ == "__main__":

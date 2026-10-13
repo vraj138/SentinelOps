@@ -1,79 +1,24 @@
 """Applies scenario steps to the running demo stack and undoes them.
 
-Every applied change is saved to `storage/faults/active.json` right after it happens, so
-`reset` can undo a scenario from a separate process, even one that failed halfway through.
+Every applied change is saved to `storage/faults/active.json` right after it happens, so the
+active scenario is known even to a separate process. `reset` restores the baseline directly.
 """
 
-import os
-import subprocess
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from faults.deploy_repo import ROOT, DeployRepo
-from faults.flags import FlagFile
 from faults.provider import ProviderFile
 from faults.scenario import Deploy, FlipFlag, Scenario, SetProviderLatency, Step
+from sentinelops.stack.deploy_repo import BASE_RELEASES, ROOT, DeployRepo
+from sentinelops.stack.flags import BASE_FLAGS, FlagFile
+from sentinelops.stack.runtime import ComposeRuntime, Runtime
 
-COMPOSE_FILE = ROOT / "infra" / "docker-compose.yml"
 ACTIVE_FILE = ROOT / "storage" / "faults" / "active.json"
-
-
-class Runtime(Protocol):
-    """Restarts a service so it picks up its new release settings."""
-
-    def recreate(self, service: str) -> None: ...
-
-
-class ContainerRuntimeError(RuntimeError):
-    """A container runtime command failed."""
-
-
-def tag_from_image(image: str) -> str:
-    """The tag part of an image reference: `sentinelops-demo:4078549` -> `4078549`."""
-    name, sep, tag = image.rpartition(":")
-    if not sep or "/" in tag:
-        raise ContainerRuntimeError(f"image {image!r} has no tag")
-    return tag
-
-
-class ComposeRuntime:
-    """Runtime backed by `docker compose`. Commands are argument lists, never a shell string.
-
-    A recreated container keeps the image tag it was already running, so it runs the same code
-    as the rest of the stack even if the main repo has new commits since `make up`.
-    """
-
-    def __init__(self, compose_file: Path = COMPOSE_FILE) -> None:
-        self.compose_file = compose_file
-
-    def recreate(self, service: str) -> None:
-        env = {**os.environ, "IMAGE_TAG": self.running_image_tag(service)}
-        args = [*self._compose(), "up", "-d", "--no-deps", service]
-        result = subprocess.run(args, capture_output=True, text=True, env=env)
-        if result.returncode != 0:
-            raise ContainerRuntimeError(f"recreating {service} failed: {result.stderr.strip()}")
-
-    def running_image_tag(self, service: str) -> str:
-        """Tag of the image the service's container is running now."""
-        container_id = self._run([*self._compose(), "ps", "-q", service]).strip()
-        if not container_id:
-            raise ContainerRuntimeError(f"{service} has no container; run `make up` first")
-        image = self._run(["docker", "inspect", container_id, "--format", "{{.Config.Image}}"])
-        return tag_from_image(image.strip())
-
-    def _compose(self) -> list[str]:
-        return ["docker", "compose", "-f", str(self.compose_file)]
-
-    def _run(self, args: list[str]) -> str:
-        result = subprocess.run(args, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise ContainerRuntimeError(f"{' '.join(args[:3])} failed: {result.stderr.strip()}")
-        return result.stdout
 
 
 class AppliedChange(BaseModel):
@@ -147,17 +92,28 @@ class Environment:
         return record
 
     def reset(self, log: Callable[[str], None] = print) -> ActiveFault | None:
-        """Undo the active scenario's changes in reverse order. Returns what was undone."""
+        """Return the stack to its baseline, whatever changed since (faults, remediations,
+        manual edits). Returns the scenario that was active, if any.
+
+        Restores state directly instead of replaying history, so it works even after a
+        remediation already rolled something back.
+        """
         record = self.active()
-        if record is None:
-            return None
-        while record.changes:
-            change = record.changes[-1]
-            self._undo(change)
-            record.changes.pop()
-            self._save(record)
-            log(f"undid {describe(change)}")
-        self.active_file.unlink()
+        changed = []
+        for service, settings in BASE_RELEASES.items():
+            if self.repo.write_release(service, dict(settings), "Restore baseline release"):
+                changed.append(service)
+        for service in changed:
+            self.runtime.recreate(service)
+            log(f"restored baseline release of {service}")
+        if self.flags.read() != BASE_FLAGS:
+            self.flags.write(dict(BASE_FLAGS), updated_by="oncall")
+            log("restored baseline feature flags")
+        if self.provider.latency_ms() != 0:
+            self.provider.set_latency(0)
+            log("restored payment provider to normal")
+        if self.active_file.exists():
+            self.active_file.unlink()
         return record
 
     def _apply(self, step: Step) -> AppliedChange:
@@ -191,17 +147,6 @@ class Environment:
             flag=step.name,
             previous_value=previous,
         )
-
-    def _undo(self, change: AppliedChange) -> None:
-        if change.kind == "deploy" and change.commit and change.service:
-            self.repo.revert(change.commit)
-            self.runtime.recreate(change.service)
-        elif change.kind == "flag" and change.flag and change.previous_value is not None:
-            self.flags.set(change.flag, change.previous_value, "oncall")
-        elif change.kind == "provider" and change.previous_latency_ms is not None:
-            self.provider.set_latency(change.previous_latency_ms)
-        else:
-            raise ValueError(f"cannot undo incomplete change record: {change}")
 
     def _save(self, record: ActiveFault) -> None:
         self.active_file.parent.mkdir(parents=True, exist_ok=True)

@@ -10,7 +10,9 @@ import re
 import subprocess
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+from pydantic import BaseModel
+
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PATH = ROOT / "storage" / "deploy-repo"
 
 BASE_RELEASES: dict[str, dict[str, str]] = {
@@ -27,6 +29,16 @@ BASE_RELEASES: dict[str, dict[str, str]] = {
     },
 }
 DEFAULT_AUTHOR = ("release-bot", "release-bot@sentinelops.local")
+
+
+class Change(BaseModel):
+    """One commit to a service's release file."""
+
+    sha: str
+    author: str
+    time: str
+    message: str
+    before: dict[str, str]
 
 
 class DeployRepoError(RuntimeError):
@@ -57,12 +69,7 @@ class DeployRepo:
 
     def read(self, service: str) -> dict[str, str]:
         """Current release settings for `service`."""
-        settings: dict[str, str] = {}
-        for line in self.env_file(service).read_text().splitlines():
-            if line and not line.startswith("#"):
-                key, _, value = line.partition("=")
-                settings[key] = value
-        return settings
+        return parse_env(self.env_file(service).read_text())
 
     def deploy(
         self,
@@ -89,12 +96,58 @@ class DeployRepo:
         return self.head()
 
     def revert(self, sha: str, author: tuple[str, str] = DEFAULT_AUTHOR) -> str:
-        """Revert one commit with a new commit. Returns the new commit SHA."""
+        """Revert one commit with a new commit. Returns the new commit SHA.
+
+        If the revert conflicts it is aborted, so the repo is never left half-reverted.
+        """
         name, email = author
-        self._git(
-            "-c", f"user.name={name}", "-c", f"user.email={email}", "revert", "--no-edit", sha
-        )
+        try:
+            self._git(
+                "-c", f"user.name={name}", "-c", f"user.email={email}", "revert", "--no-edit", sha
+            )
+        except DeployRepoError:
+            if (self.path / ".git" / "REVERT_HEAD").exists():
+                self._git("revert", "--abort")
+            raise
         return self.head()
+
+    def write_release(
+        self,
+        service: str,
+        settings: dict[str, str],
+        message: str,
+        author: tuple[str, str] = DEFAULT_AUTHOR,
+    ) -> str | None:
+        """Commit `settings` as the whole release of `service`, unchanged version included.
+
+        Returns the new commit SHA, or None if the settings were already exactly that.
+        """
+        if self.read(service) == settings:
+            return None
+        self._write(service, settings)
+        self._git("add", str(self.env_file(service)))
+        self._commit(message, author)
+        return self.head()
+
+    def last_change(self, service: str) -> Change | None:
+        """The latest commit that changed `service`, with the settings it replaced.
+
+        None if the service has only its initial release.
+        """
+        path = f"services/{service}.env"
+        fmt = "%H%x1f%an%x1f%aI%x1f%s"
+        lines = self._git("log", "-2", f"--format={fmt}", "--", path).splitlines()
+        if len(lines) < 2:
+            return None
+        sha, author, when, subject = lines[0].split("\x1f")
+        before = self._git("show", f"{sha}^:{path}")
+        return Change(
+            sha=sha,
+            author=author,
+            time=when,
+            message=subject,
+            before=parse_env(before),
+        )
 
     def highest_version(self, service: str) -> str:
         """The highest `APP_VERSION` this service has had, including reverted releases."""
@@ -133,3 +186,13 @@ def bump_patch(version: str) -> str:
     """Increment the last part of a dotted version: 1.9.0 -> 1.9.1."""
     major_minor, _, patch = version.rpartition(".")
     return f"{major_minor}.{int(patch) + 1}"
+
+
+def parse_env(text: str) -> dict[str, str]:
+    """Parse KEY=VALUE lines, skipping comments and blank lines."""
+    settings: dict[str, str] = {}
+    for line in text.splitlines():
+        if line and not line.startswith("#"):
+            key, _, value = line.partition("=")
+            settings[key] = value
+    return settings

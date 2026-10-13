@@ -4,7 +4,7 @@ import pytest
 
 from sentinelops.config import Settings
 
-ENV_VARS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "PROMETHEUS_URL", "DATABASE_URL"]
+ENV_VARS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "PROMETHEUS_URL", "CONTROLPLANE_DATABASE_URL"]
 
 
 def test_settings_load_with_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -16,7 +16,7 @@ def test_settings_load_with_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.anthropic_api_key is None
     assert settings.openai_api_key is None
     assert settings.prometheus_url == "http://localhost:9090"
-    assert settings.database_url is None
+    assert settings.controlplane_database_url.endswith("@localhost:5433/sentinelops")
 
 
 def test_settings_read_environment(monkeypatch: pytest.MonkeyPatch) -> None:

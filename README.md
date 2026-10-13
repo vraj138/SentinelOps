@@ -74,7 +74,7 @@ These are design rules, enforced in code:
 
 - **Diagnostics are read-only.** Investigating tools can look but never change anything.
 - **No free-form commands.** The model can only choose from typed actions defined in code
-  (`rollback`, `restart`, `scale`, `set_flag`). There is no shell access and never `shell=True`.
+  (`rollback`, `restart`, `set_flag`). There is no shell access and never `shell=True`.
 - **A human approves every action**, and the approval is recorded before anything runs.
 - **Every action is verified afterwards.** If verification fails, the system rolls back and
   escalates automatically.
@@ -129,7 +129,22 @@ curl -X POST localhost:8000/checkout     # place an order through the whole chai
 open http://localhost:9090/alerts        # Prometheus alerts
 ```
 
-Simulate an outage and watch the alerts fire:
+Break something on purpose, then fix it through the approval flow (no API key needed: an
+operator proposes the fix, and it takes the same approve -> execute -> verify path as the agent's):
+
+```bash
+make faults                                   # list the fault scenarios
+make fault NAME=bad_deploy VARIANT=a          # ship a bad payments release
+make controlplane                             # web UI at http://localhost:8080 (separate terminal)
+make incidents ARGS="open --propose rollback:payments"   # open an incident with a dry run
+# approve it on the incident page; it executes, verifies, and resolves (or rolls back + escalates)
+make reset                                    # return the stack to its baseline
+```
+
+With an `ANTHROPIC_API_KEY` in `.env`, `make investigate` runs the agent on the firing alerts,
+opens the incident, and proposes the fix from its cited root-cause analysis.
+
+Or simulate an outage by hand and watch the alerts fire:
 
 ```bash
 docker compose -f infra/docker-compose.yml stop payments    # ServiceDown fires in ~35 s
@@ -143,21 +158,23 @@ make down                                                   # stop everything
 | orders | http://localhost:8001 |
 | payments | http://localhost:8002 |
 | Prometheus | http://localhost:9090 |
-| Postgres | `localhost:5432` (user, password and database: `sentinelops`) |
+| Control plane (approvals) | http://localhost:8080 (`make controlplane`) |
+| Demo Postgres | `localhost:5432` |
+| Control-plane Postgres | `localhost:5433` |
 
 ## Roadmap
 
 - [x] Project skeleton: uv, ruff, pytest, typed settings
 - [x] Demo stack: three services, Postgres, Prometheus, alert rules, load generator
 - [x] [Design doc](docs/design.md)
-- [ ] Fault injectors: bad deploy, memory leak (OOM), DB connection exhaustion, slow dependency,
-      bad feature flag, missing secret. Some variants include a red-herring deploy.
-- [ ] MCP tool servers: runtime, metrics, logs, git, runbooks
-- [ ] Agent loop with a cited root-cause analysis
-- [ ] Typed remediation actions, approval flow, verification, auto-rollback
-- [ ] Benchmark: record and replay runs, scoring, v1 baseline, repeated runs per scenario
-- [ ] Hardening: audit log, budgets and timeouts, model fallback, cost dashboard
-- [ ] Docs: deployment guide, limitations, demo video
+- [x] Fault injectors: bad deploy, memory leak (OOM), DB connection exhaustion, slow dependency,
+      bad feature flag, missing secret, with answer keys. Some variants include a red-herring deploy.
+- [x] Read-only MCP tool servers: metrics, runtime, logs, changes (deploys + flags), runbooks
+- [x] Agent loop with a cited root-cause analysis, policy gate, audit log, budgets, model fallback
+- [x] Control plane: typed actions, web approval page, fingerprinted approvals, verification,
+      auto-rollback
+- [ ] Live agent runs and the benchmark: record and replay, scoring, v1 baseline, repeated runs
+- [ ] Docs: deployment guide, demo video ([limitations](docs/limitations.md) started)
 
 ## Results
 

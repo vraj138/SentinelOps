@@ -7,8 +7,8 @@ import pytest
 
 from demo_app.common import DemoSettings
 from faults import registry
-from faults.deploy_repo import BASE_RELEASES
 from faults.scenario import Deploy, ExpectedAction, FaultType, GroundTruth, Scenario
+from sentinelops.stack.deploy_repo import BASE_RELEASES
 
 ALERTS_FILE = Path(__file__).resolve().parent.parent / "infra" / "prometheus" / "alerts.yml"
 DEFINED_ALERTS = set(re.findall(r"- alert: (\w+)", ALERTS_FILE.read_text()))

@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PATH = ROOT / "storage" / "flags" / "flags.json"
 BASE_FLAGS: dict[str, bool] = {"checkout_v2_pricing": False}
 
