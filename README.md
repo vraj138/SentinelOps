@@ -29,6 +29,11 @@ failure:
 - Smaller bugs were hiding behind that one: the time-window filter compared ISO strings to epoch
   integers, the vector index went stale with no chunking, and invalid JSON had no fallback.
 
+> **Where v1's code lives:** the published IncidentPilot repository (the `legacy/` submodule)
+> contains only v1's retrieval app. Its LLM orchestrator, where the bugs above are, was never
+> committed there; the benchmark runs a snapshot of that local working copy and records its
+> SHA-256 alongside the results.
+
 An assistant that sounds right but has no evidence is worse than having no assistant.
 SentinelOps is the answer to that failure:
 
@@ -173,15 +178,26 @@ make down                                                   # stop everything
 - [x] Agent loop with a cited root-cause analysis, policy gate, audit log, budgets, model fallback
 - [x] Control plane: typed actions, web approval page, fingerprinted approvals, verification,
       auto-rollback
-- [ ] Live agent runs and the benchmark: record and replay, scoring, v1 baseline, repeated runs
-- [ ] Docs: deployment guide, demo video ([limitations](docs/limitations.md) started)
+- [x] Benchmark harness: clean-slate runs, scoring vs answer keys, judge, v1 baseline, replay
+- [ ] Live agent runs and benchmark results (needs API keys)
+- [x] Docs: [deployment guide](docs/deployment.md), [limitations](docs/limitations.md)
+- [ ] Demo video
 
 ## Results
 
-The benchmark has not run yet. This section will hold measured results: root-cause accuracy,
-correct-remediation rate, harmful-action rate, time, tokens and cost per incident, each compared
-with the v1 baseline. Every number will come with its run count and methodology. There will be
-no placeholder figures here.
+**Not measured yet.** The benchmark harness is built and dry-run tested on the live stack;
+the numbers need a model API key. When they exist, this section will show SentinelOps against
+the v1 baseline over every fault scenario, three runs each: root-cause accuracy,
+proposed-action accuracy, harmful-proposal rate, correct escalation, time, tokens and cost per
+incident, with run counts. There will be no placeholder figures here.
+
+```bash
+make bench-dry                                  # free: scripted model, proves the harness
+make bench ARGS="--confirm-spend --v1 both"     # paid: SentinelOps + both v1 variants
+make report                                     # summary table -> evals/results/summary.md
+```
+
+How runs are isolated and scored: [design doc section 7](docs/design.md#7-evaluation-plan).
 
 ## Project layout
 

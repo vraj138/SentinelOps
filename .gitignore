@@ -2,6 +2,7 @@
 __pycache__/
 .env
 storage/
-evals/recordings/*.json
+evals/recordings/*
+!evals/recordings/.gitkeep
 .ruff_cache/
 .pytest_cache/

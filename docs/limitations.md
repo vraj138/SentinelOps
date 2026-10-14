@@ -54,3 +54,8 @@ each item says what would change in a real deployment.
   scrapes slowed to 9 s during testing. Benchmark runs should be done with other apps closed.
 - **One fault at a time**, with a reset and a quiet period between runs. Overlapping incidents
   are not tested.
+- **The v1 baseline is an uncommitted working copy.** Its LLM orchestrator was never pushed to
+  the public IncidentPilot repo; results record the snapshot's SHA-256 so the exact code is
+  identifiable, but it can't be checked out from a public commit.
+- **Proposals are scored, not executed.** Remediation success is shown separately by the
+  control plane's live checks; the benchmark measures diagnosis and the proposed fix.

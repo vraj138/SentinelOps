@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import anthropic
@@ -17,7 +18,7 @@ import openai
 from sentinelops.agent.anthropic_llm import AnthropicLLM
 from sentinelops.agent.audit import AuditLog
 from sentinelops.agent.investigator import Budget, InvestigationResult, Investigator
-from sentinelops.agent.llm import FallbackLLM, LLMUnavailable
+from sentinelops.agent.llm import LLM, FallbackLLM, LLMUnavailable
 from sentinelops.agent.openai_llm import OpenAILLM
 from sentinelops.agent.policy import PolicyGate
 from sentinelops.agent.toolhub import ToolHub, stdio_servers
@@ -55,8 +56,16 @@ def build_llm(settings: Settings, audit: AuditLog) -> FallbackLLM:
     return FallbackLLM(primary, secondary, audit)
 
 
-async def investigate(settings: Settings, context: str, run_id: str) -> InvestigationResult:
-    """Run the agent; everything it does is written to storage/runs/<run_id>/audit.jsonl."""
+async def investigate(
+    settings: Settings,
+    context: str,
+    run_id: str,
+    llm_factory: Callable[[AuditLog], LLM] | None = None,
+) -> InvestigationResult:
+    """Run the agent; everything it does is written to <runs_dir>/<run_id>/audit.jsonl.
+
+    The tool specs are saved next to it (tools.json) so the run can be replayed later.
+    """
     run_dir = settings.runs_dir / run_id
     audit = AuditLog(run_dir / "audit.jsonl")
     budget = Budget(
@@ -65,8 +74,11 @@ async def investigate(settings: Settings, context: str, run_id: str) -> Investig
         max_cost_usd=settings.agent_max_cost_usd,
         max_seconds=settings.agent_max_seconds,
     )
+    llm = llm_factory(audit) if llm_factory else build_llm(settings, audit)
     async with ToolHub(stdio_servers()) as hub:
-        investigator = Investigator(build_llm(settings, audit), hub, audit, PolicyGate(), budget)
+        specs = [spec.model_dump() for spec in hub.specs.values()]
+        (run_dir / "tools.json").write_text(json.dumps(specs, indent=2))
+        investigator = Investigator(llm, hub, audit, PolicyGate(), budget)
         result = await investigator.run(context)
     (run_dir / "result.json").write_text(result.model_dump_json(indent=2))
     return result

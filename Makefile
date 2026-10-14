@@ -1,4 +1,4 @@
-.PHONY: install test lint format env up down ps faults fault reset investigate controlplane incidents
+.PHONY: install test lint format env up down ps faults fault reset investigate controlplane incidents bench bench-dry bench-pilot report
 
 COMPOSE := docker compose -f infra/docker-compose.yml
 
@@ -46,3 +46,15 @@ controlplane:
 
 incidents:
 	uv run python -m sentinelops.incidents $(ARGS)
+
+bench-dry:
+	uv run python -m sentinelops.evals run --dry-run --repeats 1 --results storage/bench-dry/results.jsonl --recordings storage/bench-dry/recordings $(ARGS)
+
+bench-pilot:
+	uv run python -m sentinelops.evals run --repeats 1 --scenarios bad_deploy/c --results storage/pilot/results.jsonl --recordings storage/pilot/recordings $(ARGS)
+
+bench:
+	uv run python -m sentinelops.evals run $(ARGS)
+
+report:
+	uv run python -m sentinelops.evals report

@@ -252,20 +252,41 @@ caused it, so rolling back any deploy is wrong.
 not code changes. Scenarios run one at a time, and alerts need about a minute to clear between
 runs. Timing-based alerts are sensitive to host load, so runs record host conditions.
 
-**Record and replay:** live runs record every tool response. Replay mode re-runs the agent
-against those recordings without the stack running. Replay is cheap and repeatable, so it also
-serves as a regression test.
+**How a benchmark run works** (`python -m sentinelops.evals run`, built and dry-run tested):
+1. **Clean slate.** The previous run's deploy repo and container events are archived, the deploy
+   repo is re-initialized, flags and the provider are reset, Prometheus and all three services
+   are force-recreated (fresh metric history, logs and counters), and the runner waits until no
+   alert is active. Without this, the agent could solve a run from the last run's leftovers.
+2. **Inject** the scenario, then **wait for any expected alert** to fire (up to 5 minutes),
+   which is when a real page would arrive. If none fires, the run is "not manifested" and left
+   out of the score rather than counted against the agent.
+3. **Investigate** with the same alert text every system gets. Every tool result is recorded.
+4. **v1** (optional) answers the same alert text against the same live fault.
+5. **Score** and append one JSON line; an interrupted benchmark resumes from the next run.
 
-**Metrics:**
-- root-cause accuracy;
-- correct-remediation rate;
-- harmful or unnecessary action rate;
-- correct-escalation rate;
-- time to proposal;
-- tokens, cost and tool calls per incident.
+**Scoring** (`sentinelops/evals/scoring.py`), against the answer key written before any run:
+- *Root-cause service*: exact match; for "escalate" scenarios, naming the external dependency or
+  the service that calls it counts.
+- *Proposed action*: full (the expected action), partial (an acceptable stopgap such as a
+  restart for a leak), wrong, or missed (escalated when a fix was expected).
+- *Harmful proposal*: a state-changing action that is neither expected nor acceptable, such as
+  rolling back the red-herring deploy, or any change when escalation was expected.
+- *Escalation correct*, citations, time to answer, tokens, cost and tool calls.
+- Proposals are **scored, never executed**: executing would need a human approval per run.
+- Root-cause *text* from both systems is graded by one LLM judge that is not told which
+  system wrote it, and that must first pass hand-labelled calibration cases.
 
-**Baseline:** v1 IncidentPilot gets the same scenarios. It cannot act, so it is scored on root
-cause only. Each scenario runs three times, and results are reported with run counts.
+**The v1 baseline.** The published IncidentPilot repository only contains the retrieval app;
+the LLM orchestrator described in the v1 story (gpt-4o-mini plus the failing `FastMCPClient`
+import) exists only as uncommitted files in the local working copy. The baseline runs a
+snapshot of that working copy in its own environment (never modifying `legacy/`) and records
+the commit it sits on and a SHA-256 of the snapshot. Two variants run: v1 with its own corpus,
+and v1 with SentinelOps' runbooks added, so the comparison isolates live evidence rather than
+missing documentation.
+
+**Replay.** Each run's tool specs and results are recorded; `python -m sentinelops.evals replay
+<run>` re-runs the agent against them without the stack, for testing prompt or model changes
+on fixed evidence.
 
 ## 8. Risks and open questions
 

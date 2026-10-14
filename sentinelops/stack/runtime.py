@@ -8,6 +8,7 @@ from typing import Protocol
 from sentinelops.config import ROOT
 
 COMPOSE_FILE = ROOT / "infra" / "docker-compose.yml"
+DEMO_SERVICES = ("gateway", "orders", "payments")
 
 
 class Runtime(Protocol):
@@ -44,10 +45,18 @@ class ComposeRuntime:
     def __init__(self, compose_file: Path = COMPOSE_FILE) -> None:
         self.compose_file = compose_file
 
-    def recreate(self, service: str) -> None:
-        env = {**os.environ, "IMAGE_TAG": self.running_image_tag(service)}
-        args = [*self._compose(), "up", "-d", "--no-deps", service]
-        result = subprocess.run(args, capture_output=True, text=True, env=env)
+    def recreate(self, service: str, force: bool = False) -> None:
+        """`force` replaces the container even if its settings didn't change, with fresh logs,
+        in-memory state and anonymous volumes. Demo services keep their running image tag."""
+        env = dict(os.environ)
+        if service in DEMO_SERVICES:
+            env["IMAGE_TAG"] = self.running_image_tag(service)
+        args = [*self._compose(), "up", "-d", "--no-deps"]
+        if force:
+            # --renew-anon-volumes: Prometheus keeps its data in an anonymous volume, which a
+            # plain recreate would carry over (old restarts, old alerts).
+            args += ["--force-recreate", "--renew-anon-volumes"]
+        result = subprocess.run([*args, service], capture_output=True, text=True, env=env)
         if result.returncode != 0:
             raise ContainerRuntimeError(f"recreating {service} failed: {result.stderr.strip()}")
 
