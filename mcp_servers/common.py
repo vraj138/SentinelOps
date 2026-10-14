@@ -20,9 +20,22 @@ _SECRET_ASSIGNMENT = re.compile(
 _URL_CREDENTIALS = re.compile(r"([a-z][a-z0-9+.-]*://[^:/\s@]+):[^@\s]+@")
 
 
+NOT_SECRETS = ("error", "exception")  # `KeyError: 'risk_score'` is evidence, not a secret
+
+
+def _mask(match: re.Match[str]) -> str:
+    name, separator, _ = match.groups()
+    if name.lower().endswith(NOT_SECRETS):
+        return match.group(0)
+    return f"{name}{separator}[redacted]"
+
+
 def redact(text: str) -> str:
-    """Replace secret values (`*KEY*=...`, `*PASSWORD*: ...`, `scheme://user:pass@`)."""
-    text = _SECRET_ASSIGNMENT.sub(r"\1\2[redacted]", text)
+    """Replace secret values (`*KEY*=...`, `*PASSWORD*: ...`, `scheme://user:pass@`).
+
+    Exception names such as `KeyError` contain KEY but are kept: their message is evidence.
+    """
+    text = _SECRET_ASSIGNMENT.sub(_mask, text)
     return _URL_CREDENTIALS.sub(r"\1:[redacted]@", text)
 
 

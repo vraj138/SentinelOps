@@ -18,9 +18,10 @@ each item says what would change in a real deployment.
   evidence must be gathered before remediation (the agent investigates first by design).
 
 ## Agent
-- **Not yet measured with a real model.** The loop, tools and safety checks are unit tested
-  and rehearsed against the live stack with a scripted model; live Claude runs and the
-  benchmark come next. No accuracy numbers are claimed until they are measured.
+- **Measured on a small sample.** The first benchmark is 10 runs (one per scenario) on Claude
+  Opus 5.5; it shows the system works end to end, not a tight accuracy estimate.
+- **Scenario commit messages are descriptive**, which makes diagnosis easier than with typical
+  real-world commits; terser or misleading messages are a planned harder variant.
 - **OpenAI fallback is untested live.** It was written against the SDK's signatures and unit
   tested with fake responses only. Its cost is reported as unknown.
 - **Cost is a lower bound** when a turn is served by a model without a configured price.

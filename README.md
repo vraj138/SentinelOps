@@ -181,23 +181,48 @@ make down                                                   # stop everything
 - [x] Control plane: typed actions, web approval page, fingerprinted approvals, verification,
       auto-rollback
 - [x] Benchmark harness: clean-slate runs, scoring vs answer keys, judge, v1 baseline, replay
-- [ ] Live agent runs and benchmark results (needs API keys)
+- [x] SentinelOps benchmark: 10 scenarios, 1 run each
+- [ ] v1 baseline comparison and more repeats (needs an OpenAI key)
 - [x] Docs: [deployment guide](docs/deployment.md), [limitations](docs/limitations.md)
 - [x] CI: lint and tests on every push
 - [ ] Demo video ([script](docs/demo.md) ready)
 
 ## Results
 
-**Not measured yet.** The benchmark harness is built and dry-run tested on the live stack;
-the numbers need a model API key. When they exist, this section will show SentinelOps against
-the v1 baseline over every fault scenario, three runs each: root-cause accuracy,
-proposed-action accuracy, harmful-proposal rate, correct escalation, time, tokens and cost per
-incident, with run counts. There will be no placeholder figures here.
+**SentinelOps, measured on 2026-10-14:** 10 fault scenarios, **1 run each**, Claude Opus 5.5
+(`claude-opus-5-5`, effort `high`). Each run starts from a clean slate (fresh deploy history,
+logs, events and metrics), injects the fault, waits for a real alert, then investigates.
+
+| metric | SentinelOps |
+|---|---|
+| correct root-cause service | 100% (10/10) |
+| correct proposed action | 100% (10/10) |
+| harmful proposal (e.g. rolling back the red-herring deploy) | 0% (0/10) |
+| correct escalation (escalate only when nothing we control caused it) | 100% (10/10) |
+| median time from alert to answer | 33 s |
+| mean cost per incident | $0.10 |
+| mean tool calls / citations per answer | 10.3 / 10.8 |
+
+Scenarios: bad deploy (3 variants, one with a red-herring deploy), memory leak, DB connection
+exhaustion, slow external dependency (2, one with a red herring), bad feature flag (2), missing
+secret. Per-run details: [`evals/results/summary.md`](evals/results/summary.md).
+
+**Read these numbers with their limits:**
+- **10 runs, one per scenario.** That's enough to show it works end to end, not a tight
+  accuracy estimate. More repeats and harder variants are the next step.
+- **I wrote the scenarios and the agent.** Answer keys were fixed before any run, and red
+  herrings punish shortcuts, but the faults are known to be diagnosable.
+- **Deploy commit messages are descriptive** ("Keep all receipts in memory..."), which makes
+  diagnosis easier than with typical real-world commits.
+- **Proposals are scored, not executed.** Executing them, with approval, verification and
+  auto-rollback, is shown separately in the control plane's live tests.
+- **v1 baseline: not yet run** (needs an OpenAI key). The comparison table will be added when
+  it is measured, with the same alerts and the same judge for both systems.
 
 ```bash
-make bench-dry                                  # free: scripted model, proves the harness
-make bench ARGS="--confirm-spend --v1 both"     # paid: SentinelOps + both v1 variants
-make report                                     # summary table -> evals/results/summary.md
+make bench-dry                              # free: scripted model, proves the harness
+make bench ARGS="--confirm-spend"           # paid: SentinelOps on every scenario
+make report                                 # summary table -> evals/results/summary.md
 ```
 
 How runs are isolated and scored: [design doc section 7](docs/design.md#7-evaluation-plan).

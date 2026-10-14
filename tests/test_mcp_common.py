@@ -18,6 +18,9 @@ from mcp_servers.common import ToolError, cap, check_service, redact, to_result
         ),
         ("APP_VERSION=1.9.0", "APP_VERSION=1.9.0"),
         ("PAYMENTS_API_KEY is not set", "PAYMENTS_API_KEY is not set"),
+        ("KeyError: 'risk_score'", "KeyError: 'risk_score'"),
+        ("TokenExpiredException: session 42", "TokenExpiredException: session 42"),
+        ("API_KEY: still-secret", "API_KEY: [redacted]"),
     ],
 )
 def test_redact(text: str, expected: str) -> None:
