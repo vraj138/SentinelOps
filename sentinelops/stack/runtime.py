@@ -12,7 +12,7 @@ DEMO_SERVICES = ("gateway", "orders", "payments")
 
 
 class Runtime(Protocol):
-    """Restarts demo services."""
+    """Restarts, stops and starts demo stack containers."""
 
     def recreate(self, service: str) -> None:
         """Replace the container so it picks up new release settings."""
@@ -20,6 +20,14 @@ class Runtime(Protocol):
 
     def restart(self, service: str) -> None:
         """Restart the existing container with the same settings."""
+        ...
+
+    def stop(self, service: str) -> None:
+        """Stop a container (used to simulate an infrastructure outage)."""
+        ...
+
+    def start(self, service: str) -> None:
+        """Start a stopped container. A no-op if it is already running."""
         ...
 
 
@@ -62,6 +70,12 @@ class ComposeRuntime:
 
     def restart(self, service: str) -> None:
         self._run([*self._compose(), "restart", service])
+
+    def stop(self, service: str) -> None:
+        self._run([*self._compose(), "stop", service])
+
+    def start(self, service: str) -> None:
+        self._run([*self._compose(), "start", service])
 
     def running_image_tag(self, service: str) -> str:
         """Tag of the image the service's container is using (even if it is crash-looping)."""

@@ -66,22 +66,17 @@ class Extractor:
         return Extraction.model_validate(json.loads(text))
 
 
-def correct(
-    extraction: Extraction,
-    root_cause_service: str,
-    expects_escalation: bool,
-    allow_hedge: bool = False,
-) -> bool:
-    """The same rule as SentinelOps' structured score: right service, single cause.
+def correct(extraction: Extraction, accepted: list[str], allow_hedge: bool = False) -> bool:
+    """The same rule as SentinelOps' structured score: an accepted root cause, single cause.
 
-    `allow_hedge` is the lenient variant: a hedged answer counts if the first cause it names is
-    the right service. Both are reported so a strict rule can't hide a near miss.
+    "database" counts as `postgres`. `allow_hedge` is the lenient variant: a hedged answer
+    counts if the first cause it names is accepted. Both are reported so a strict rule can't
+    hide a near miss.
     """
     if extraction.hedged and not allow_hedge:
         return False
-    if expects_escalation:
-        return extraction.blamed in ("external", root_cause_service)
-    return extraction.blamed == root_cause_service
+    blamed = "postgres" if extraction.blamed == "database" else extraction.blamed
+    return blamed in accepted
 
 
 # Hand-labelled cases the extractor must get right before its output is used.

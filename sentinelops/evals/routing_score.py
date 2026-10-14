@@ -1,7 +1,7 @@
 """'Correct team on the first page': which team each system would page, scored against the
 answer key's owning team. Free: derived from answers already recorded.
 
-- sentinelops: the product owning its diagnosed root-cause service.
+- sentinelops and naive-agent: the product owning the diagnosed root-cause service.
 - naive-rule: the owner of the most-downstream alerting service (today's alert-owner routing).
 - v1: the product owning the service its answer blames; "database" or "unknown" pages no team.
 """
@@ -16,14 +16,17 @@ from sentinelops.catalog import Catalog
 def paged_service(record: dict, recordings_dir: Path) -> str | None:
     """The service whose owner this system would page."""
     system = record["system"]
-    if system == "sentinelops":
-        result = recordings_dir / record["run_id"] / "result.json"
+    if system in ("sentinelops", "naive-agent"):
+        suffix = "-naive" if system == "naive-agent" else ""
+        result = recordings_dir / f"{record['run_id']}{suffix}" / "result.json"
         rca = json.loads(result.read_text()).get("rca") if result.exists() else None
         return rca["root_cause_service"] if rca else None
     if system == "naive-rule":
         return (record.get("recommended_action") or {}).get("service")
     extracted = record.get("extracted")
-    return extracted["blamed"] if extracted else None
+    if not extracted:
+        return None
+    return "postgres" if extracted["blamed"] == "database" else extracted["blamed"]
 
 
 def score(results_path: Path, recordings_dir: Path, catalog: Catalog) -> None:

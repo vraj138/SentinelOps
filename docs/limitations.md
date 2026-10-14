@@ -18,12 +18,8 @@ each item says what would change in a real deployment.
   evidence must be gathered before remediation (the agent investigates first by design).
 
 ## Agent
-- **Measured on a small sample.** The benchmark is 14 runs (one per scenario) on Claude
-  Opus 5.5; it shows the system works end to end, not a tight accuracy estimate.
-- **Most commit messages are descriptive.** Four hard variants use terse or misleading
-  messages and also passed, but most scenarios still describe their change honestly.
-- **Decoys land after the symptoms start**, so timing alone rules them out. A red-herring
-  deploy that lands just before the fault is a harder, not yet included test.
+- **Most commit messages are descriptive.** A few hard variants use terse or misleading
+  messages, but most scenarios still describe their change honestly.
 - **OpenAI fallback is untested live.** It was written against the SDK's signatures and unit
   tested with fake responses only. Its cost is reported as unknown.
 - **Cost is a lower bound** when a turn is served by a model without a configured price.
@@ -58,16 +54,38 @@ each item says what would change in a real deployment.
   cooldown after an incident closes. Two separate faults in one product inside that window are
   merged into one incident.
 
-## Evaluation
-- **Scenarios are written by the same person who built the agent.** Mitigations: red herrings,
-  multiple variants, answer keys written before any agent run, and scenarios published with
-  results.
+## The safety eval suite
+This is a small, open safety eval suite, not an authoritative benchmark. Read its numbers with
+these limits:
+- **Few scenarios:** 17 scenarios across 7 fault types, on one small demo stack.
+- **Self-authored:** the same person wrote the scenarios, the answer keys and the agent.
+  Mitigations: answer keys are fixed before any run, red herrings and safety traps punish
+  shortcuts, a naive agent and a naive rule run as baselines, and every scenario, answer key
+  and per-run result is published so anyone can check or challenge them.
+- **One model:** both agents run on Claude Opus 5.5 only. Results may differ on other models.
+- **Few runs:** one run per scenario per agent unless stated, so the numbers show behaviour,
+  not tight accuracy estimates.
+- **The naive agent is my construction**, not a third-party system: SentinelOps' own agent
+  with the safety layer removed (the exact prompt difference is in
+  `sentinelops/evals/naive_agent.py`). A comparison with an independent open-source agent
+  (HolmesGPT) is planned.
+- **Same fault instance, fixed order:** both agents investigate the same live fault, SentinelOps
+  first (it changes nothing), then the naive agent, which acts. The naive agent therefore sees
+  slightly more history in logs and metrics.
+- **SentinelOps' proposals are scored, not executed** in the suite (executing would need a human
+  approval per run). The naive agent's proposals are executed, by design, and its effect on
+  health is measured. Execution, verification and auto-rollback for SentinelOps are shown
+  separately in the control plane's live tests.
+- **The evidence check tests traceability, not truth.** A citation passes if it names a
+  successful tool call from the same investigation; nothing checks that the tool result really
+  supports the claim. That applies to SentinelOps' own check too.
 - **Timing-based alerts are sensitive to host load.** On an 8 GB laptop with other apps open,
-  scrapes slowed to 9 s during testing. Benchmark runs should be done with other apps closed.
-- **One fault at a time**, with a reset and a quiet period between runs. Overlapping incidents
-  are not tested.
+  scrapes slowed to 9 s during testing.
+- **One fault at a time**, with a clean slate between runs. Concurrent incidents are not tested.
 - **The v1 baseline is an uncommitted working copy.** Its LLM orchestrator was never pushed to
   the public IncidentPilot repo; results record the snapshot's SHA-256 so the exact code is
   identifiable, but it can't be checked out from a public commit.
-- **Proposals are scored, not executed.** Remediation success is shown separately by the
-  control plane's live checks; the benchmark measures diagnosis and the proposed fix.
+
+**Contributions welcome:** new scenarios (especially ones that make a safe agent fail), answer-key
+corrections, and runs on other models. A scenario is a small Python module in `faults/` with
+its steps and answer key; see `faults/db_outage.py` for a short example.

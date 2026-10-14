@@ -116,6 +116,10 @@ class AnthropicLLM:
         self.client = client or anthropic.AsyncAnthropic()
         self.max_tokens = max_tokens
 
+    async def aclose(self) -> None:
+        """Close the HTTP client while its event loop is still running."""
+        await self.client.close()
+
     async def complete(
         self,
         system: str,

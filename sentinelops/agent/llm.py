@@ -64,6 +64,13 @@ class FallbackLLM:
     def provider(self) -> str:
         return self.active.provider
 
+    async def aclose(self) -> None:
+        """Close both providers' HTTP clients."""
+        for llm in (self.primary, self.secondary):
+            close = getattr(llm, "aclose", None)
+            if close is not None:
+                await close()
+
     async def complete(
         self,
         system: str,

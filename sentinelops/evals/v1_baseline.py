@@ -63,10 +63,24 @@ def legacy_sha() -> str:
     return result.stdout.strip()
 
 
+RUNTIME_DIRS = {"storage", "__pycache__"}  # written by v1 while it runs, not part of its code
+
+
 def snapshot_hash(directory: Path) -> str:
-    """SHA-256 over every file's path and content: identifies exactly which v1 ran."""
+    """SHA-256 over every source file's path and content: identifies exactly which v1 ran.
+
+    Files v1 writes while running (its vector store, bytecode) are left out, so the hash stays
+    the same across runs of the same snapshot.
+    """
     digest = hashlib.sha256()
-    for path in sorted(p for p in directory.rglob("*") if p.is_file() and p.name != "v1_entry.py"):
+    files = (
+        p
+        for p in directory.rglob("*")
+        if p.is_file()
+        and p.name != "v1_entry.py"
+        and not RUNTIME_DIRS.intersection(p.relative_to(directory).parts)
+    )
+    for path in sorted(files):
         digest.update(str(path.relative_to(directory)).encode())
         digest.update(path.read_bytes())
     return digest.hexdigest()

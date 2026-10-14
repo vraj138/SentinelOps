@@ -254,3 +254,21 @@ def test_openai_connection_error_means_unavailable() -> None:
 
     with pytest.raises(LLMUnavailable, match="openai"):
         asyncio.run(llm.complete("sys", [UserMessage(text="go")], [SPEC], RCA_JSON_SCHEMA))
+
+
+def test_fallback_llm_closes_both_clients(tmp_path) -> None:
+    from sentinelops.agent.audit import AuditLog
+    from sentinelops.agent.llm import FallbackLLM
+
+    closed: list[str] = []
+
+    class Closable:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.provider = name
+
+        async def aclose(self) -> None:
+            closed.append(self.name)
+
+    asyncio.run(FallbackLLM(Closable("a"), Closable("b"), AuditLog(tmp_path / "x.jsonl")).aclose())
+    assert closed == ["a", "b"]

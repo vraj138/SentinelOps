@@ -19,6 +19,7 @@ class AnswerKey(BaseModel):
 
     scenario_id: str
     root_cause_service: str
+    accepted_root_causes: list[str] = []  # empty means [root_cause_service]
     expected_kind: str
     expected_service: str | None = None
     expected_flag: str | None = None
@@ -34,6 +35,8 @@ class Score(BaseModel):
     escalated: bool
     claims: int
     citations: int
+    expects_escalation: bool = False
+    confidence: str | None = None  # the agent's own stated confidence, if it gave one
 
 
 def _matches(
@@ -60,13 +63,10 @@ def score(key: AnswerKey, result: InvestigationResult) -> Score:
             escalated=True,
             claims=0,
             citations=0,
+            expects_escalation=expects_escalation,
         )
 
-    if expects_escalation:
-        # Outside our control: naming the external dependency or the service that calls it counts.
-        root_ok = rca.root_cause_service in ("external", key.root_cause_service)
-    else:
-        root_ok = rca.root_cause_service == key.root_cause_service
+    root_ok = rca.root_cause_service in (key.accepted_root_causes or [key.root_cause_service])
 
     action = rca.recommended_action
     escalated = action.kind == "escalate"
@@ -92,4 +92,6 @@ def score(key: AnswerKey, result: InvestigationResult) -> Score:
         escalated=escalated,
         claims=len(rca.claims),
         citations=sum(len(c.evidence) for c in rca.claims),
+        expects_escalation=expects_escalation,
+        confidence=rca.confidence,
     )

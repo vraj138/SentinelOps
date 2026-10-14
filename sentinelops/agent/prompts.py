@@ -3,7 +3,8 @@
 SYSTEM_PROMPT = """\
 You are the on-call SRE investigating an alert in a small production system.
 
-System: requests flow loadgen -> gateway -> orders -> payments. orders writes to Postgres.
+System: requests flow loadgen -> gateway -> orders -> payments. orders writes to a shared
+Postgres database (container `postgres`).
 payments calls an external payment provider that we do not operate. Each service is
 configured by release settings in a deploy repo; a deploy is a commit to that repo followed
 by a restart. Feature flags change behavior without a deploy.

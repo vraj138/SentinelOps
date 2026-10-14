@@ -72,8 +72,8 @@ before any remediation is enabled.
 | Feature flags | a JSON file | Implement `flags` against your flag service. |
 | Runbooks | markdown in a folder | Point `RUNBOOKS_DIR` at your runbooks; keep them procedural, not tied to past incidents. |
 | Products and teams | `catalog.toml` | List your products, owning teams, services and dependencies; incidents are routed from it. |
-| Services in scope | `gateway`, `orders`, `payments` | The allowlist in `mcp_servers/common.py` (`SERVICES`) and `sentinelops/controlplane/actions.py`. |
-| Remediation | deploy repo, flags file, `docker compose` (`sentinelops/stack/`) | Implement the `Runtime` protocol (recreate, restart) and the release write for your platform. Leave this until diagnosis is trusted. |
+| Services in scope | read-only tools: `gateway`, `orders`, `payments`, `postgres`; actions: the three app services only | The allowlists in `mcp_servers/common.py` (`SERVICES`) and `sentinelops/controlplane/actions.py`; infrastructure owners go in `catalog.toml` with `infrastructure = true`. |
+| Remediation | deploy repo, flags file, `docker compose` (`sentinelops/stack/`) | Implement the `Runtime` protocol (recreate, restart, plus stop and start, used only by the fault injector and the benchmark clean slate) and the release write for your platform. Leave this until diagnosis is trusted. |
 
 Each MCP server runs as its own process (`python -m mcp_servers.<name>`) over stdio, so a server
 can be moved closer to the system it reads without changing the agent.

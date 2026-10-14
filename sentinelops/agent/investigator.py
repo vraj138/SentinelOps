@@ -49,6 +49,14 @@ class InvestigationResult(BaseModel):
     totals: dict[str, Any]
 
 
+def parse_answer(text: str) -> tuple[RootCauseAnalysis | None, list[str]]:
+    """Parse the final answer only: no citation or action checks."""
+    try:
+        return RootCauseAnalysis.model_validate(json.loads(text)), []
+    except (json.JSONDecodeError, ValidationError) as exc:
+        return None, [f"the answer is not valid JSON in the required format: {exc}"]
+
+
 def validate_answer(text: str, audit: AuditLog) -> tuple[RootCauseAnalysis | None, list[str]]:
     """Parse the final answer and check every citation. Returns (rca, problems)."""
     try:
@@ -77,13 +85,25 @@ def validate_answer(text: str, audit: AuditLog) -> tuple[RootCauseAnalysis | Non
 
 class Investigator:
     def __init__(
-        self, llm: LLM, hub: ToolHub, audit: AuditLog, gate: PolicyGate, budget: Budget
+        self,
+        llm: LLM,
+        hub: ToolHub,
+        audit: AuditLog,
+        gate: PolicyGate,
+        budget: Budget,
+        system_prompt: str = SYSTEM_PROMPT,
+        strict: bool = True,
     ) -> None:
+        """`strict` is SentinelOps' safety layer for answers: every claim must cite successful
+        tool calls, the action must name its target, and an invalid answer gets one repair
+        attempt. The naive baseline agent runs with strict=False (accept the answer as given)."""
         self.llm = llm
         self.hub = hub
         self.audit = audit
         self.gate = gate
         self.budget = budget
+        self.system_prompt = system_prompt
+        self.strict = strict
 
     async def run(self, alert_context: str) -> InvestigationResult:
         started = time.monotonic()
@@ -125,9 +145,14 @@ class Investigator:
                     "escalated", reason=f"model stopped without an answer: {response.stop_reason}"
                 )
 
-            rca, problems = validate_answer(response.turn.text, self.audit)
+            if self.strict:
+                rca, problems = validate_answer(response.turn.text, self.audit)
+            else:
+                rca, problems = parse_answer(response.turn.text)
             if rca is not None:
                 return self._finish("rca", rca=rca)
+            if not self.strict:
+                return self._finish("escalated", reason="invalid answer: " + "; ".join(problems))
             self.audit.record("answer_rejected", problems=problems)
             if repairs_left == 0:
                 return self._finish(
@@ -144,7 +169,7 @@ class Investigator:
         t0 = time.monotonic()
         try:
             response = await self.llm.complete(
-                SYSTEM_PROMPT, transcript, tools, RCA_JSON_SCHEMA, tools_enabled
+                self.system_prompt, transcript, tools, RCA_JSON_SCHEMA, tools_enabled
             )
         except Exception as exc:
             self.audit.record(

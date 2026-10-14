@@ -15,6 +15,8 @@ from sentinelops.stack.runtime import ContainerRuntimeError, tag_from_image
 class FakeRuntime:
     def __init__(self, fail_on_call: int | None = None) -> None:
         self.recreated: list[str] = []
+        self.stopped: list[str] = []
+        self.started: list[str] = []
         self.fail_on_call = fail_on_call
 
     def recreate(self, service: str) -> None:
@@ -24,6 +26,12 @@ class FakeRuntime:
 
     def restart(self, service: str) -> None:
         self.recreated.append(service)
+
+    def stop(self, service: str) -> None:
+        self.stopped.append(service)
+
+    def start(self, service: str) -> None:
+        self.started.append(service)
 
 
 def make_env(tmp_path: Path, runtime: FakeRuntime | None = None) -> Environment:
@@ -135,3 +143,13 @@ def test_tag_from_image() -> None:
     assert tag_from_image("localhost:5000/sentinelops-demo:abc") == "abc"
     with pytest.raises(ContainerRuntimeError, match="has no tag"):
         tag_from_image("localhost:5000/sentinelops-demo")
+
+
+def test_db_outage_stops_postgres_and_reset_starts_it(tmp_path: Path) -> None:
+    env = make_env(tmp_path)
+
+    env.inject(registry.get("db_outage/a"), log=quiet)
+    assert env.runtime.stopped == ["postgres"]  # type: ignore[attr-defined]
+
+    env.reset(log=quiet)
+    assert "postgres" in env.runtime.started  # type: ignore[attr-defined]

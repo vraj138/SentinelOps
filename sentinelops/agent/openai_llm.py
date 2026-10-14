@@ -81,6 +81,10 @@ class OpenAILLM:
         self.model = model
         self.client = client or openai.AsyncOpenAI()
 
+    async def aclose(self) -> None:
+        """Close the HTTP client while its event loop is still running."""
+        await self.client.close()
+
     async def complete(
         self,
         system: str,

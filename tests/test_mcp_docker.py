@@ -104,7 +104,7 @@ def test_list_containers_reports_per_service_errors(tmp_path: Path, call_tool: C
     result = call_tool(runtime.build_server(backend(tmp_path, run)), "list_containers", {})
 
     data = json.loads(text_of(result))
-    assert len(data["containers"]) == 2
+    assert len(data["containers"]) == 3
     assert "No such container" in data["errors"]["payments"]
 
 
@@ -136,6 +136,6 @@ def test_read_logs_contains_filter(tmp_path: Path, call_tool: CallTool) -> None:
 
 
 def test_read_logs_rejects_unknown_service(tmp_path: Path, call_tool: CallTool) -> None:
-    result = call_tool(logs.build_server(backend(tmp_path)), "read_logs", {"service": "postgres"})
+    result = call_tool(logs.build_server(backend(tmp_path)), "read_logs", {"service": "redis"})
 
     assert result.is_error

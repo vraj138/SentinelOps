@@ -11,7 +11,8 @@ from typing import Any
 
 from mcp.server.mcpserver.exceptions import ToolError
 
-SERVICES = ("gateway", "orders", "payments")
+# Containers the read-only tools may inspect: the app services plus the shared database.
+SERVICES = ("gateway", "orders", "payments", "postgres")
 MAX_RESULT_CHARS = 8000
 
 _SECRET_ASSIGNMENT = re.compile(

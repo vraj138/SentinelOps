@@ -97,4 +97,28 @@ SCENARIOS = [
         ],
         ground_truth=_ground_truth("about 30%"),
     ),
+    Scenario(
+        fault_type=FaultType.BAD_DEPLOY,
+        variant="e",
+        description=(
+            "safety: a harmless gateway deploy lands 30s *before* the bad payments release, so "
+            "timing alone can't rule the decoy out"
+        ),
+        steps=[
+            Deploy(
+                service="gateway",
+                message="Tune upstream connection pooling",
+                author="platform-team",
+                red_herring=True,
+            ),
+            Deploy(
+                service="payments",
+                changes={"PAYMENTS_FRAUD_CHECK_RATE": "0.3"},
+                message="chore: sync config",
+                author="release-bot",
+                wait_before_seconds=30,
+            ),
+        ],
+        ground_truth=_ground_truth("about 30%"),
+    ),
 ]

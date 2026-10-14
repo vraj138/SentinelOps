@@ -22,10 +22,20 @@ from sentinelops.agent.investigator import InvestigationResult
 from sentinelops.agent.llm import LLM
 from sentinelops.config import Settings
 from sentinelops.controlplane.alerts import firing_alerts
+from sentinelops.controlplane.models import Alert
 from sentinelops.evals.cleanslate import CleanSlate
 from sentinelops.evals.scoring import AnswerKey, Score, score
 
 ALERT_TIMEOUT_SECONDS = 300
+SYSTEM_NAIVE = "naive-agent"
+
+
+class NaiveAgent(BaseModel):
+    """How to run the naive baseline: its investigate function and its auto-executor."""
+
+    model_config = {"arbitrary_types_allowed": True}
+    investigate: Any
+    executor: Any
 
 
 class RunRecord(BaseModel):
@@ -46,6 +56,11 @@ class RunRecord(BaseModel):
     error: str | None = None
     host_free_memory_mb: float | None = None
     system_version: dict[str, Any] = {}
+    # Naive agent only: its proposal is executed without approval, then health is measured.
+    executed: bool | None = None
+    execution_error: str | None = None
+    fixed_after_action: bool | None = None
+    failed_checks: list[str] = []
 
 
 def answer_key(scenario: Scenario) -> AnswerKey:
@@ -54,6 +69,7 @@ def answer_key(scenario: Scenario) -> AnswerKey:
     return AnswerKey(
         scenario_id=scenario.id,
         root_cause_service=truth.root_cause_service,
+        accepted_root_causes=truth.accepted,
         expected_kind=action.kind,
         expected_service=action.service,
         expected_flag=action.flag,
@@ -63,11 +79,15 @@ def answer_key(scenario: Scenario) -> AnswerKey:
 
 
 def completed_runs(results_path: Path, system: str = "sentinelops") -> set[str]:
-    """Run ids already finished by `system` (each system resumes independently)."""
+    """Run ids already finished by `system` (each system resumes independently).
+
+    Errored runs don't count as finished, so resuming retries them (for example after an API
+    outage or an empty credit balance).
+    """
     if not results_path.exists():
         return set()
     records = [json.loads(line) for line in results_path.read_text().splitlines() if line]
-    return {r["run_id"] for r in records if r["system"] == system}
+    return {r["run_id"] for r in records if r["system"] == system and r.get("status") != "error"}
 
 
 def host_free_memory_mb() -> float | None:
@@ -92,7 +112,9 @@ class BenchmarkRunner:
         recordings_dir: Path,
         llm_factory: Callable[[AuditLog], LLM] | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        naive: NaiveAgent | None = None,
     ) -> None:
+        """`naive`, if given, also runs the naive baseline agent on the same live fault."""
         self.settings = settings
         self.environment = environment
         self.clean_slate = clean_slate
@@ -101,6 +123,7 @@ class BenchmarkRunner:
         self.recordings_dir = recordings_dir
         self.llm_factory = llm_factory
         self.sleep = sleep
+        self.naive = naive
 
     def run(
         self, scenarios: list[Scenario], repeats: int, log: Callable[[str], None] = print
@@ -124,7 +147,11 @@ class BenchmarkRunner:
     def run_one(
         self, scenario: Scenario, repeat: int, run_id: str, log: Callable[[str], None]
     ) -> list[RunRecord]:
-        """One SentinelOps run on a live fault. (v1 runs later from the recording.)"""
+        """SentinelOps, then the naive agent (if configured), on one live fault instance.
+
+        SentinelOps goes first because it never changes the system; the naive agent acts. v1 runs
+        later from the recording, since it never reads live state.
+        """
         started = datetime.now(UTC).isoformat(timespec="seconds")
         run_dir = self.recordings_dir / run_id
         if run_dir.exists():  # an earlier attempt crashed before writing its result line
@@ -149,7 +176,7 @@ class BenchmarkRunner:
                     RunRecord(**base, manifested=False, alerts_fired=[], status="not_manifested")
                 ]
             seconds_to_alert = time.monotonic() - t0
-            context, _ = firing_alerts(self.settings.prometheus_url)
+            context, alerts = firing_alerts(self.settings.prometheus_url)
             log(f"  investigate ({', '.join(fired)})")
             settings = self.settings.model_copy(update={"runs_dir": self.recordings_dir})
             t1 = time.monotonic()
@@ -171,6 +198,15 @@ class BenchmarkRunner:
                     seconds_to_answer=round(time.monotonic() - t1, 1),
                 )
             ]
+            if self.naive is not None:
+                log("  naive agent")
+                common = {
+                    **base,
+                    "system": SYSTEM_NAIVE,
+                    "alerts_fired": fired,
+                    "seconds_to_alert": round(seconds_to_alert, 1),
+                }
+                records.append(self._run_naive(scenario, settings, context, alerts, run_id, common))
             return records
         except Exception as exc:  # noqa: BLE001 - recorded as an errored run, never dropped
             return [
@@ -180,6 +216,38 @@ class BenchmarkRunner:
             ]
         finally:
             self.environment.reset(log=lambda m: None)
+
+    def _run_naive(
+        self,
+        scenario: Scenario,
+        settings: Settings,
+        context: str,
+        alerts: list[Alert],
+        run_id: str,
+        common: dict[str, Any],
+    ) -> RunRecord:
+        assert self.naive is not None
+        t0 = time.monotonic()
+        try:
+            result: InvestigationResult = asyncio.run(
+                self.naive.investigate(settings, context, f"{run_id}-naive", self.llm_factory)
+            )
+            answered = round(time.monotonic() - t0, 1)
+            outcome = self.naive.executor.apply(result.rca, alerts, run_id)
+        except Exception as exc:  # noqa: BLE001 - recorded, never dropped
+            return RunRecord(**common, manifested=True, status="error", error=repr(exc))
+        rca = result.rca
+        return RunRecord(
+            **common,
+            manifested=True,
+            status=result.status,
+            score=score(answer_key(scenario), result),
+            root_cause_text=rca.root_cause if rca else result.escalation_reason,
+            recommended_action=rca.recommended_action.model_dump() if rca else None,
+            totals=result.totals,
+            seconds_to_answer=answered,
+            **outcome.model_dump(),
+        )
 
     def _wait_for_alert(self, scenario: Scenario) -> list[str]:
         """Wait until any expected alert fires. Returns the expected alerts that are firing."""

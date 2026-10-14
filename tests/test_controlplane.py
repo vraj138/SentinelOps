@@ -33,6 +33,12 @@ class FakeRuntime:
     def restart(self, service: str) -> None:
         self.calls.append(("restart", service))
 
+    def stop(self, service: str) -> None:
+        self.calls.append(("stop", service))
+
+    def start(self, service: str) -> None:
+        self.calls.append(("start", service))
+
 
 class FakeMetrics:
     """Answers verification queries: every service healthy unless listed in `failing`."""

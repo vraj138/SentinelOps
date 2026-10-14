@@ -13,7 +13,15 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from faults.provider import ProviderFile
-from faults.scenario import Deploy, FlipFlag, Scenario, SetProviderLatency, Step
+from faults.scenario import (
+    INFRA_SERVICES,
+    Deploy,
+    FlipFlag,
+    Scenario,
+    SetProviderLatency,
+    Step,
+    StopService,
+)
 from sentinelops.stack.deploy_repo import BASE_RELEASES, ROOT, DeployRepo
 from sentinelops.stack.flags import BASE_FLAGS, FlagFile
 from sentinelops.stack.runtime import ComposeRuntime, Runtime
@@ -24,7 +32,7 @@ ACTIVE_FILE = ROOT / "storage" / "faults" / "active.json"
 class AppliedChange(BaseModel):
     """What one step changed, with enough detail to undo it."""
 
-    kind: Literal["deploy", "flag", "provider"]
+    kind: Literal["deploy", "flag", "provider", "stop"]
     applied_at: datetime
     red_herring: bool
     service: str | None = None
@@ -112,6 +120,8 @@ class Environment:
         if self.provider.latency_ms() != 0:
             self.provider.set_latency(0)
             log("restored payment provider to normal")
+        for service in INFRA_SERVICES:  # idempotent: starting a running container is a no-op
+            self.runtime.start(service)
         if self.active_file.exists():
             self.active_file.unlink()
         return record
@@ -127,6 +137,11 @@ class Environment:
                 red_herring=step.red_herring,
                 service=step.service,
                 commit=sha,
+            )
+        if isinstance(step, StopService):
+            self.runtime.stop(step.service)
+            return AppliedChange(
+                kind="stop", applied_at=now(), red_herring=step.red_herring, service=step.service
             )
         if isinstance(step, SetProviderLatency):
             previous_latency = self.provider.latency_ms()
@@ -160,4 +175,6 @@ def describe(change: AppliedChange) -> str:
         return f"deploy of {change.service} at {change.commit and change.commit[:7]}{tag}"
     if change.kind == "provider":
         return f"payment provider latency (was {change.previous_latency_ms}ms){tag}"
+    if change.kind == "stop":
+        return f"stopped {change.service}{tag}"
     return f"flag {change.flag} (was {change.previous_value}){tag}"

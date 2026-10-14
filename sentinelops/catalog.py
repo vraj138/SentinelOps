@@ -21,6 +21,9 @@ class Product(BaseModel):
     services: list[str]
     depends_on: list[str] = Field(default_factory=list)  # services this product calls
     external_dependencies: list[str] = Field(default_factory=list)
+    infrastructure: bool = (
+        False  # shared infrastructure: visible to tools, never a remediation target
+    )
 
 
 class Catalog(BaseModel):
@@ -58,6 +61,11 @@ class Catalog(BaseModel):
     @property
     def services(self) -> list[str]:
         return [s for p in self.products for s in p.services]
+
+    @property
+    def app_services(self) -> list[str]:
+        """Services the typed remediation actions may target (not shared infrastructure)."""
+        return [s for p in self.products if not p.infrastructure for s in p.services]
 
     def downstream_first(self) -> list[str]:
         """Services ordered so each comes before the services that depend on it."""

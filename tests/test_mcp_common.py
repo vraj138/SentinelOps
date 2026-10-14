@@ -38,5 +38,6 @@ def test_cap_says_how_much_was_cut() -> None:
 
 def test_check_service_rejects_unknown() -> None:
     assert check_service("orders") == "orders"
-    with pytest.raises(ToolError, match="unknown service 'postgres'"):
-        check_service("postgres")
+    assert check_service("postgres") == "postgres"  # shared infrastructure is inspectable
+    with pytest.raises(ToolError, match="unknown service 'redis'"):
+        check_service("redis")

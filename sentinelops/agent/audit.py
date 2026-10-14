@@ -18,6 +18,13 @@ class AuditLog:
         self.records: list[dict[str, Any]] = []
         self._counters = {"T": 0, "L": 0}
 
+    @classmethod
+    def load(cls, path: Path) -> "AuditLog":
+        """An existing audit log, read back from disk (for scoring recorded runs)."""
+        log = cls(path)
+        log.records = [json.loads(line) for line in path.read_text().splitlines() if line]
+        return log
+
     def next_id(self, prefix: str) -> str:
         """Next sequential id: T1, T2, ... for tool calls; L1, L2, ... for LLM calls."""
         self._counters[prefix] += 1

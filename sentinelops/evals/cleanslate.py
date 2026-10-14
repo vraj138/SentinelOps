@@ -15,10 +15,12 @@ from sentinelops.stack.deploy_repo import DeployRepo
 from sentinelops.stack.flags import BASE_FLAGS, FlagFile
 
 DEMO_SERVICES = ("payments", "orders", "gateway")
+INFRA_SERVICES = ("postgres",)
 
 
 class Runtime(Protocol):
     def recreate(self, service: str, force: bool = False) -> None: ...
+    def start(self, service: str) -> None: ...
 
 
 class Alerts(Protocol):
@@ -55,6 +57,8 @@ class CleanSlate:
         self.repo.init()
         self.flags.write(dict(BASE_FLAGS), updated_by="init")
         self.reset_provider()
+        for service in INFRA_SERVICES:  # a crashed earlier run may have left the database down
+            self.runtime.start(service)
         for service in DEMO_SERVICES:
             self.runtime.recreate(service, force=True)  # fresh logs and counters
         # Prometheus last, so its fresh history never sees the restarts above.

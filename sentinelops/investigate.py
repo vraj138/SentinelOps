@@ -21,6 +21,7 @@ from sentinelops.agent.investigator import Budget, InvestigationResult, Investig
 from sentinelops.agent.llm import LLM, FallbackLLM, LLMUnavailable
 from sentinelops.agent.openai_llm import OpenAILLM
 from sentinelops.agent.policy import PolicyGate
+from sentinelops.agent.prompts import SYSTEM_PROMPT
 from sentinelops.agent.toolhub import ToolHub, stdio_servers
 from sentinelops.config import Settings
 from sentinelops.controlplane import build_control_plane
@@ -61,6 +62,8 @@ async def investigate(
     context: str,
     run_id: str,
     llm_factory: Callable[[AuditLog], LLM] | None = None,
+    system_prompt: str = SYSTEM_PROMPT,
+    strict: bool = True,
 ) -> InvestigationResult:
     """Run the agent; everything it does is written to <runs_dir>/<run_id>/audit.jsonl.
 
@@ -75,11 +78,18 @@ async def investigate(
         max_seconds=settings.agent_max_seconds,
     )
     llm = llm_factory(audit) if llm_factory else build_llm(settings, audit)
-    async with ToolHub(stdio_servers()) as hub:
-        specs = [spec.model_dump() for spec in hub.specs.values()]
-        (run_dir / "tools.json").write_text(json.dumps(specs, indent=2))
-        investigator = Investigator(llm, hub, audit, PolicyGate(), budget)
-        result = await investigator.run(context)
+    try:
+        async with ToolHub(stdio_servers()) as hub:
+            specs = [spec.model_dump() for spec in hub.specs.values()]
+            (run_dir / "tools.json").write_text(json.dumps(specs, indent=2))
+            investigator = Investigator(
+                llm, hub, audit, PolicyGate(), budget, system_prompt=system_prompt, strict=strict
+            )
+            result = await investigator.run(context)
+    finally:
+        close = getattr(llm, "aclose", None)
+        if close is not None:  # close HTTP clients before asyncio.run closes the event loop
+            await close()
     (run_dir / "result.json").write_text(result.model_dump_json(indent=2))
     return result
 

@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import json
 import sys
+from functools import partial
 from pathlib import Path
 
 import anthropic
@@ -20,15 +21,18 @@ from sentinelops.agent.investigator import Budget, Investigator
 from sentinelops.agent.policy import PolicyGate
 from sentinelops.catalog import load as load_catalog
 from sentinelops.config import ROOT, Settings
-from sentinelops.evals import heuristic, report, routing_score, v1_baseline
+from sentinelops.controlplane.actions import ActionBackend
+from sentinelops.controlplane.verify import Verifier
+from sentinelops.evals import citation_check, heuristic, report, routing_score, v1_baseline
 from sentinelops.evals.cleanslate import CleanSlate
 from sentinelops.evals.extract import CALIBRATION as EXTRACT_CALIBRATION
 from sentinelops.evals.extract import Extractor
 from sentinelops.evals.extract import correct as extracted_correct
 from sentinelops.evals.judge import Judge, calibrate
 from sentinelops.evals.judge_cases import CASES
+from sentinelops.evals.naive_agent import NAIVE_SYSTEM_PROMPT, NaiveExecutor
 from sentinelops.evals.replay import ReplayHub
-from sentinelops.evals.runner import BenchmarkRunner, run_v1_from_recordings
+from sentinelops.evals.runner import BenchmarkRunner, NaiveAgent, run_v1_from_recordings
 from sentinelops.evals.runner import answer_key as runner_answer_key
 from sentinelops.evals.scripted import ScriptedLLM
 from sentinelops.investigate import build_llm, has_anthropic_credentials, investigate
@@ -67,6 +71,13 @@ def cmd_run(args: argparse.Namespace, settings: Settings) -> None:
         settings.container_events_path,
         PrometheusBackend(settings.prometheus_url),
     )
+    naive = None
+    if not args.no_naive:
+        actions = ActionBackend(repo, flags, runtime)
+        naive = NaiveAgent(
+            investigate=partial(investigate, system_prompt=NAIVE_SYSTEM_PROMPT, strict=False),
+            executor=NaiveExecutor(actions, Verifier(PrometheusBackend(settings.prometheus_url))),
+        )
     runner = BenchmarkRunner(
         settings,
         environment,
@@ -75,6 +86,7 @@ def cmd_run(args: argparse.Namespace, settings: Settings) -> None:
         results_path=Path(args.results),
         recordings_dir=Path(args.recordings),
         llm_factory=(lambda audit: ScriptedLLM()) if args.dry_run else None,
+        naive=naive,
     )
     runner.run(scenarios, args.repeats)
     print(report.markdown(report.load(Path(args.results))))
@@ -164,11 +176,9 @@ def cmd_extract(args: argparse.Namespace, settings: Settings) -> None:
             key = runner_answer_key(registry.get(r["scenario_id"]))
             got = extractor.extract(r["root_cause_text"])
             r["extracted"] = got.model_dump()
-            escalate = key.expected_kind == "escalate"
-            r["extracted_correct"] = extracted_correct(got, key.root_cause_service, escalate)
-            r["extracted_correct_lenient"] = extracted_correct(
-                got, key.root_cause_service, escalate, allow_hedge=True
-            )
+            accepted = key.accepted_root_causes or [key.root_cause_service]
+            r["extracted_correct"] = extracted_correct(got, accepted)
+            r["extracted_correct_lenient"] = extracted_correct(got, accepted, allow_hedge=True)
     path.write_text("".join(json.dumps(r) + "\n" for r in records))
     print(report.markdown(records))
 
@@ -182,6 +192,12 @@ def cmd_baseline(args: argparse.Namespace, settings: Settings) -> None:
 def cmd_routing(args: argparse.Namespace, settings: Settings) -> None:
     """Score 'correct team on the first page' for every system. Free."""
     routing_score.score(Path(args.results), Path(args.recordings), load_catalog())
+    print(report.markdown(report.load(Path(args.results))))
+
+
+def cmd_citations(args: argparse.Namespace, settings: Settings) -> None:
+    """Re-run SentinelOps' evidence check on every recorded answer. Free."""
+    citation_check.score(Path(args.results), Path(args.recordings))
     print(report.markdown(report.load(Path(args.results))))
 
 
@@ -219,6 +235,7 @@ def main() -> None:
     run.add_argument("--dry-run", action="store_true", help="scripted model, no API calls")
     run.add_argument("--confirm-spend", action="store_true", help="required for paid runs")
     run.add_argument("--recordings", default=str(RECORDINGS), help="where run recordings go")
+    run.add_argument("--no-naive", action="store_true", help="skip the naive baseline agent")
     v1 = sub.add_parser("v1", help="run the v1 baseline on recorded runs (no stack needed)")
     v1.add_argument("--variant", choices=["shipped", "our-runbooks", "both"], default="both")
     v1.add_argument("--recordings", default=str(RECORDINGS))
@@ -231,7 +248,9 @@ def main() -> None:
     baseline = sub.add_parser("baseline", help="score the naive rule baseline (free)")
     routing = sub.add_parser("routing", help="score correct team on first page (free)")
     routing.add_argument("--recordings", default=str(RECORDINGS))
-    for p in (run, v1, judge, extract, baseline, routing, sub.add_parser("report")):
+    citations = sub.add_parser("citations", help="re-check every answer's citations (free)")
+    citations.add_argument("--recordings", default=str(RECORDINGS))
+    for p in (run, v1, judge, extract, baseline, routing, citations, sub.add_parser("report")):
         p.add_argument("--results", default=str(RESULTS))
     sub.add_parser("replay").add_argument("run_id")
     args = parser.parse_args()
@@ -242,6 +261,7 @@ def main() -> None:
         "extract": cmd_extract,
         "baseline": cmd_baseline,
         "routing": cmd_routing,
+        "citations": cmd_citations,
         "report": cmd_report,
         "replay": cmd_replay,
     }

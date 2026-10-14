@@ -58,15 +58,45 @@ def test_get_unknown_scenario_lists_valid_ids() -> None:
         registry.get("nope/z")
 
 
-def test_red_herring_cannot_touch_the_faulty_service() -> None:
-    with pytest.raises(ValueError, match="red herring must not touch the faulty service"):
+def _truth() -> GroundTruth:
+    return GroundTruth(
+        root_cause_service="payments",
+        root_cause="x",
+        key_evidence=["x"],
+        expected_action=ExpectedAction(kind="rollback", service="payments"),
+        expected_alerts=[],
+    )
+
+
+def test_red_herring_on_faulty_service_may_only_bump_the_version() -> None:
+    real = Deploy(
+        service="payments", changes={"PAYMENTS_FRAUD_CHECK_RATE": "1.0"}, message="r", author="t"
+    )
+    bump = Deploy(service="payments", message="harmless", author="t", red_herring=True)
+    Scenario(
+        fault_type=FaultType.BAD_DEPLOY,
+        variant="ok",
+        description="d",
+        steps=[bump, real],
+        ground_truth=_truth(),
+    )
+
+
+def test_red_herring_cannot_change_settings_on_the_faulty_service() -> None:
+    with pytest.raises(ValueError, match="red herring on the faulty service may not change"):
         Scenario(
             fault_type=FaultType.BAD_DEPLOY,
             variant="x",
             description="invalid",
             steps=[
                 Deploy(service="payments", message="real fault", author="t"),
-                Deploy(service="payments", message="herring", author="t", red_herring=True),
+                Deploy(
+                    service="payments",
+                    changes={"PAYMENTS_FRAUD_CHECK_RATE": "0.1"},
+                    message="herring",
+                    author="t",
+                    red_herring=True,
+                ),
             ],
             ground_truth=GroundTruth(
                 root_cause_service="payments",

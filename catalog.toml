@@ -15,7 +15,7 @@ name = "Orders"
 team = "commerce-team"
 description = "Order intake and storage (Postgres)."
 services = ["orders"]
-depends_on = ["payments"]
+depends_on = ["payments", "postgres"]
 
 [[products]]
 id = "payments"
@@ -25,3 +25,11 @@ description = "Charges cards through an external payment provider."
 services = ["payments"]
 depends_on = []
 external_dependencies = ["payment provider"]
+
+[[products]]
+id = "platform"
+name = "Data Platform"
+team = "data-platform-team"
+description = "Shared Postgres database used by Orders."
+services = ["postgres"]
+infrastructure = true

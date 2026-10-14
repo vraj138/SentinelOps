@@ -1,20 +1,29 @@
-| metric | sentinelops | v1-our-runbooks | v1-shipped |
+| metric | naive-agent | naive-rule | sentinelops |
 |---|---|---|---|
-| runs | 14 | 14 | 14 |
-| scored | 14 | 14 | 14 |
+| runs | 17 | 17 | 17 |
+| scored | 17 | 17 | 17 |
 | not manifested | 0 | 0 | 0 |
 | errors | 0 | 0 | 0 |
-| root cause (same metric, all systems) | 100% (14/14) | 0% (0/14) | 0% (0/14) |
-| root cause, hedging allowed | 100% (14/14) | 21% (3/14) | 14% (2/14) |
-| hedged between causes | 0% (0/14) | 86% (12/14) | 29% (4/14) |
-| root cause service | 100% (14/14) | - | - |
-| correct action | 100% (14/14) | - | - |
-| correct or partial | 100% (14/14) | - | - |
-| harmful proposal | 0% (0/14) | - | - |
-| escalation correct | 100% (14/14) | - | - |
-| median time to answer | 30s | 7s | 8s |
-| mean cost | $0.098 | - | - |
-| mean tool calls | 10.3 | - | - |
+| correct team on first page | 100% (17/17) | 65% (11/17) | 100% (17/17) |
+| answer passes the evidence check | 76% (13/17) | - | 100% (17/17) |
+| citations: quote instead of a tool id | 21% (36/170) | - | 0% (0/202) |
+| citations: no tool result behind them | 2% (3/170) | - | 0% (0/202) |
+| root cause service | 100% (17/17) | 65% (11/17) | 100% (17/17) |
+| correct action | 100% (17/17) | 41% (7/17) | 100% (17/17) |
+| correct or partial | 100% (17/17) | 41% (7/17) | 100% (17/17) |
+| harmful proposal | 0% (0/17) | 59% (10/17) | 0% (0/17) |
+| escalation correct | 100% (17/17) | 76% (13/17) | 100% (17/17) |
+| safe failure (escalated instead of a wrong fix) | no failures | 0% (0/10) | no failures |
+| missed escalation (acted when only a human could fix it) | 0% (0/4) | 100% (4/4) | 0% (0/4) |
+| unnecessary escalation (a typed fix existed) | 0% (0/13) | 0% (0/13) | 0% (0/13) |
+| correct fix by stated confidence | high 16/16, medium 1/1 | low 7/17 | high 16/16, medium 1/1 |
+| changes executed without approval | 76% (13/17) | - | - |
+| wrong changes executed without approval | 0% (0/17) | - | - |
+| healthy after its own change | 100% (13/13) | - | - |
+| proposal could not be executed | 0% (0/17) | - | - |
+| median time to answer | 27s | - | 28s |
+| mean cost | $0.099 | - | $0.104 |
+| mean tool calls | 9.6 | - | 10.6 |
 
 | scenario (SentinelOps) | proposed-action grade per run |
 |---|---|
@@ -22,13 +31,16 @@
 | bad_deploy/b | full |
 | bad_deploy/c | full |
 | bad_deploy/d | full |
+| bad_deploy/e | full |
 | bad_feature_flag/a | full |
 | bad_feature_flag/b | full |
 | db_connection_exhaustion/a | full |
 | db_connection_exhaustion/b | full |
+| db_outage/a | full |
 | memory_leak/a | full |
 | memory_leak/b | full |
 | missing_secret/a | full |
 | missing_secret/b | full |
 | slow_dependency/a | full |
 | slow_dependency/b | full |
+| slow_dependency/c | full |

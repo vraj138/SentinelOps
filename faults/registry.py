@@ -4,6 +4,7 @@ from faults import (
     bad_deploy,
     bad_feature_flag,
     db_connection_exhaustion,
+    db_outage,
     memory_leak,
     missing_secret,
     slow_dependency,
@@ -17,6 +18,7 @@ ALL_SCENARIOS: list[Scenario] = [
     *slow_dependency.SCENARIOS,
     *bad_feature_flag.SCENARIOS,
     *missing_secret.SCENARIOS,
+    *db_outage.SCENARIOS,
 ]
 SCENARIOS: dict[str, Scenario] = {scenario.id: scenario for scenario in ALL_SCENARIOS}
 

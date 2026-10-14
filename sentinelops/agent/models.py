@@ -98,7 +98,7 @@ class RootCauseAnalysis(BaseModel):
     """The agent's final answer."""
 
     summary: str
-    root_cause_service: Literal["gateway", "orders", "payments", "external", "unknown"]
+    root_cause_service: Literal["gateway", "orders", "payments", "postgres", "external", "unknown"]
     root_cause: str
     claims: list[Claim]
     confidence: Literal["low", "medium", "high"]
@@ -126,7 +126,7 @@ RCA_JSON_SCHEMA: dict[str, Any] = {
         "summary": {"type": "string"},
         "root_cause_service": {
             "type": "string",
-            "enum": ["gateway", "orders", "payments", "external", "unknown"],
+            "enum": ["gateway", "orders", "payments", "postgres", "external", "unknown"],
         },
         "root_cause": {"type": "string"},
         "claims": {

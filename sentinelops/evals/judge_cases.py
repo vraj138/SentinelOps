@@ -102,4 +102,18 @@ CASES: dict[str, list[tuple[str, Verdict]]] = {
         ("Payments is crash-looping because it runs out of memory at startup.", "partial"),
         (IRRELEVANT, "wrong"),
     ],
+    "db_outage": [
+        (
+            "The shared Postgres database is down, so orders can't write orders and gateway "
+            "returns errors.",
+            "correct",
+        ),
+        (
+            "Likely root cause: the database server is unavailable (connection refused). "
+            "Remediation: restore the database.",
+            "correct",
+        ),
+        ("orders has a bug in its insert query.", "partial"),
+        (IRRELEVANT, "wrong"),
+    ],
 }
