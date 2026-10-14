@@ -1,5 +1,7 @@
 # SentinelOps
 
+[![CI](https://github.com/vraj138/SentinelOps/actions/workflows/ci.yml/badge.svg)](https://github.com/vraj138/SentinelOps/actions/workflows/ci.yml)
+
 **An AI agent for incident response that gathers evidence before it acts, and never acts without a human's approval.**
 
 When a production alert fires, SentinelOps investigates the way an on-call engineer would. It
@@ -181,7 +183,8 @@ make down                                                   # stop everything
 - [x] Benchmark harness: clean-slate runs, scoring vs answer keys, judge, v1 baseline, replay
 - [ ] Live agent runs and benchmark results (needs API keys)
 - [x] Docs: [deployment guide](docs/deployment.md), [limitations](docs/limitations.md)
-- [ ] Demo video
+- [x] CI: lint and tests on every push
+- [ ] Demo video ([script](docs/demo.md) ready)
 
 ## Results
 

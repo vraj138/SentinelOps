@@ -461,3 +461,90 @@ def test_crash_during_verification_undoes_the_action(tmp_path: Path, stack) -> N
     assert done.state == State.ESCALATED and done.rolled_back
     assert "could not run" in (done.escalation_reason or "")
     assert repo.read("payments") == bad_release
+
+
+# dashboard
+
+
+def write_agent_audit(path: Path, cost: float | None = 0.25) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    records = [
+        {"ts": "2026-10-13T20:00:00.000+00:00", "kind": "run_start"},
+        {
+            "ts": "2026-10-13T20:00:01.000+00:00",
+            "kind": "llm_call",
+            "model": "claude-opus-5-5",
+            "usage": {"total": 1200},
+            "cost_usd": cost,
+        },
+        {
+            "ts": "2026-10-13T20:00:02.000+00:00",
+            "kind": "tool_call",
+            "id": "T1",
+            "tool": "list_alerts",
+            "is_error": True,
+            "result": "Prometheus is unreachable",
+            "arguments": {},
+        },
+        {"ts": "2026-10-13T20:00:42.000+00:00", "kind": "run_end"},
+    ]
+    path.write_text("".join(json.dumps(r) + "\n" for r in records))
+
+
+def test_incident_page_shows_investigation_cost(tmp_path: Path, stack) -> None:
+    cp = plane(tmp_path, stack)
+    incident = cp.open("ctx", [])
+    write_agent_audit(tmp_path / "runs" / incident.id / "audit.jsonl")
+    client = TestClient(create_app(cp, results_path=tmp_path / "none.jsonl"))
+
+    page = client.get(f"/incidents/{incident.id}").text
+    index = client.get("/").text
+
+    assert "Investigation" in page and "1,200" in page and "$0.250" in page and "42s" in page
+    assert "(1 failed)" in page
+    assert "$0.250" in index
+
+
+def test_unpriced_model_cost_is_shown_as_a_lower_bound(tmp_path: Path, stack) -> None:
+    cp = plane(tmp_path, stack)
+    incident = cp.open("ctx", [])
+    write_agent_audit(tmp_path / "runs" / incident.id / "audit.jsonl", cost=None)
+
+    page = (
+        TestClient(create_app(cp, results_path=tmp_path / "x"))
+        .get(f"/incidents/{incident.id}")
+        .text
+    )
+
+    assert "&ge;$0.000" in page
+
+
+def test_benchmark_page_empty_and_with_results(tmp_path: Path, stack) -> None:
+    cp = plane(tmp_path, stack)
+    results = tmp_path / "results.jsonl"
+    client = TestClient(create_app(cp, results_path=results))
+    assert "No benchmark results yet" in client.get("/benchmark").text
+
+    record = {
+        "run_id": "bad_deploy-c-r1",
+        "scenario_id": "bad_deploy/c",
+        "system": "sentinelops",
+        "manifested": True,
+        "status": "rca",
+        "seconds_to_answer": 90,
+        "totals": {"cost_usd": 0.4, "tool_calls": 9},
+        "score": {
+            "root_cause_correct": True,
+            "action": "full",
+            "harmful": False,
+            "escalation_correct": True,
+            "escalated": False,
+            "claims": 3,
+            "citations": 7,
+        },
+    }
+    results.write_text(json.dumps(record) + "\n")
+
+    page = client.get("/benchmark").text
+    assert "correct action" in page and "100% (1/1)" in page
+    assert "bad_deploy/c" in page and "<td>full</td>" in page

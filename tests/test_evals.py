@@ -431,6 +431,10 @@ def test_runner_marks_unmanifested_and_errored_runs(tmp_path: Path, monkeypatch)
 # v1 baseline
 
 
+@pytest.mark.skipif(
+    not (v1_baseline.LEGACY / "src" / "orchestrator.py").exists(),
+    reason="needs the local v1 working copy (its LLM orchestrator was never published)",
+)
 def test_v1_snapshot_has_the_llm_orchestrator_and_leaves_legacy_alone(tmp_path: Path) -> None:
     before = v1_baseline.snapshot_hash(v1_baseline.LEGACY / "src")
 

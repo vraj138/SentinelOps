@@ -5,20 +5,24 @@ every value is escaped. Approving starts execution and verification in the backg
 """
 
 import json
+from datetime import datetime
 from html import escape
+from pathlib import Path
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from mcp_servers.common import mask_secrets
-from sentinelops.config import Settings
+from sentinelops.config import ROOT, Settings
 from sentinelops.controlplane import build_control_plane
 from sentinelops.controlplane.actions import ActionError
 from sentinelops.controlplane.models import Incident, State
 from sentinelops.controlplane.service import ControlPlane
 from sentinelops.controlplane.store import StaleTransition
+from sentinelops.evals import report
 
+RESULTS = ROOT / "evals" / "results" / "results.jsonl"
 STATE_COLORS = {
     State.RESOLVED: "ok",
     State.ESCALATED: "bad",
@@ -74,9 +78,62 @@ def tool_records(plane: ControlPlane, incident_id: str) -> dict[str, dict[str, A
     return {r["id"]: r for r in records if r.get("kind") == "tool_call"}
 
 
+NAV = '<p class="muted"><a href="/">Incidents</a> &middot; <a href="/benchmark">Benchmark</a></p>'
+
+
+def audit_records(plane: ControlPlane, incident_id: str) -> list[dict[str, Any]]:
+    path = plane.runs_dir / incident_id / "audit.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line]
+
+
+def run_stats(records: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """What the investigation cost: model calls, tool calls, tokens, dollars, seconds."""
+    llm = [r for r in records if r.get("kind") == "llm_call"]
+    if not llm:
+        return None
+    tools = [r for r in records if r.get("kind") == "tool_call"]
+    starts = [r["ts"] for r in records if r.get("kind") == "run_start"]
+    ends = [r["ts"] for r in records if r.get("kind") == "run_end"]
+    seconds = None
+    if starts and ends:
+        seconds = (
+            datetime.fromisoformat(ends[-1]) - datetime.fromisoformat(starts[0])
+        ).total_seconds()
+    return {
+        "llm_calls": len(llm),
+        "tool_calls": len(tools),
+        "tool_errors": sum(1 for r in tools if r.get("is_error")),
+        "tokens": sum(r["usage"]["total"] for r in llm),
+        "cost_usd": sum(r["cost_usd"] or 0 for r in llm),
+        "unpriced": sum(1 for r in llm if r["cost_usd"] is None),
+        "seconds": seconds,
+        "models": sorted({r["model"] for r in llm}),
+    }
+
+
+def format_cost(stats: dict[str, Any]) -> str:
+    cost = f"${stats['cost_usd']:.3f}"
+    return f"&ge;{cost}" if stats["unpriced"] else cost
+
+
+def render_stats(stats: dict[str, Any]) -> str:
+    cells = [
+        ("model calls", str(stats["llm_calls"])),
+        ("tool calls", f"{stats['tool_calls']} ({stats['tool_errors']} failed)"),
+        ("tokens", f"{stats['tokens']:,}"),
+        ("cost", format_cost(stats)),
+        ("time", "-" if stats["seconds"] is None else f"{stats['seconds']:.0f}s"),
+        ("model", escape(", ".join(stats["models"]))),
+    ]
+    row = "".join(f"<td><span class=muted>{k}</span><br><b>{v}</b></td>" for k, v in cells)
+    return f"<h2>Investigation</h2><div class=card><table><tr>{row}</tr></table></div>"
+
+
 def render_incident(plane: ControlPlane, incident: Incident) -> str:
     parts = [
-        '<p><a href="/">&larr; all incidents</a></p>',
+        NAV,
         f"<h1>{escape(incident.id)} {state_pill(incident.state)}</h1>",
         f'<p class="muted">opened {incident.created_at:%Y-%m-%d %H:%M:%S} UTC</p>',
         f'<div class="card"><pre>{escape(incident.alert_context)}</pre></div>',
@@ -86,6 +143,9 @@ def render_incident(plane: ControlPlane, incident: Incident) -> str:
             f'<div class="card bad"><b>Escalated:</b> {escape(incident.escalation_reason)}</div>'
         )
     tools = tool_records(plane, incident.id)
+    stats = run_stats(audit_records(plane, incident.id))
+    if stats:
+        parts.append(render_stats(stats))
     if incident.rca:
         rca = incident.rca
         claims = "".join(
@@ -165,22 +225,69 @@ def public(incident: Incident) -> dict[str, Any]:
     return mask_secrets(data)
 
 
-def create_app(plane: ControlPlane) -> FastAPI:
+def create_app(plane: ControlPlane, results_path: Path = RESULTS) -> FastAPI:
     app = FastAPI(title="SentinelOps control plane")
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
-        rows = "".join(
-            f'<tr><td><a href="/incidents/{escape(i.id)}">{escape(i.id)}</a></td><td>{state_pill(i.state)}</td>'
-            f"<td>{escape(', '.join(f'{a.name}({a.service})' for a in i.alerts) or '-')}</td></tr>"
-            for i in plane.store.list()
-        )
+        rows = []
+        for i in plane.store.list():
+            stats = run_stats(audit_records(plane, i.id))
+            cost = format_cost(stats) if stats else "-"
+            calls = str(stats["tool_calls"]) if stats else "-"
+            alerts = ", ".join(f"{a.name}({a.service})" for a in i.alerts) or "-"
+            rows.append(
+                f'<tr><td><a href="/incidents/{escape(i.id)}">{escape(i.id)}</a></td>'
+                f"<td>{state_pill(i.state)}</td><td>{escape(alerts)}</td>"
+                f"<td>{calls}</td><td>{cost}</td></tr>"
+            )
         body = (
-            "<h1>SentinelOps</h1><p class=muted>Incidents: evidence, proposed fix, human approval, "
-            "verification.</p><div class=card><table><tr><th>Incident</th><th>State</th>"
-            f"<th>Alerts</th></tr>{rows}</table></div>"
+            "<h1>SentinelOps</h1>" + NAV + "<p class=muted>Incidents: evidence, proposed fix, "
+            "human approval, verification.</p><div class=card><table><tr><th>Incident</th>"
+            "<th>State</th><th>Alerts</th><th>Tool calls</th><th>Agent cost</th></tr>"
+            f"{''.join(rows)}</table></div>"
         )
         return page("SentinelOps", body)
+
+    @app.get("/benchmark", response_class=HTMLResponse)
+    def benchmark() -> HTMLResponse:
+        body = "<h1>Benchmark</h1>" + NAV
+        if not results_path.exists() or not report.load(results_path):
+            body += (
+                "<div class=card><p>No benchmark results yet.</p><p class=muted>Run "
+                "<code>make bench-dry</code> (free) or <code>make bench "
+                "ARGS=--confirm-spend</code>; results appear here.</p></div>"
+            )
+            return page("Benchmark", body)
+        records = report.load(results_path)
+        summary = report.summarize(records)
+        systems = list(summary)
+        metrics: list[str] = []
+        for row in summary.values():
+            metrics += [m for m in row if m not in metrics]
+        head = "".join(f"<th>{escape(s)}</th>" for s in systems)
+        rows = "".join(
+            f"<tr><td>{escape(m)}</td>"
+            + "".join(f"<td>{escape(summary[s].get(m, '-'))}</td>" for s in systems)
+            + "</tr>"
+            for m in metrics
+        )
+        body += (
+            f'<p class="muted">{len(records)} result lines from {escape(results_path.name)}. '
+            "Only runs where the fault produced an alert are scored.</p>"
+            f"<div class=card><table><tr><th>metric</th>{head}</tr>{rows}</table></div>"
+        )
+        scenario_rows = "".join(
+            "<tr>"
+            + "".join(f"<td>{escape(c.strip())}</td>" for c in line.strip("|").split("|"))
+            + "</tr>"
+            for line in report.per_scenario(records)
+        )
+        body += (
+            "<h2>Per scenario (SentinelOps proposed action)</h2><div class=card><table>"
+            f"<tr><th>scenario</th><th>grade per run</th></tr>{scenario_rows}</table></div>"
+        )
+        return page("Benchmark", body)
 
     def get_or_404(incident_id: str) -> Incident:
         try:

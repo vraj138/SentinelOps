@@ -1,0 +1,3 @@
+[submodule "legacy/v1-incidentpilot/IncidentPilot"]
+	path = legacy/v1-incidentpilot/IncidentPilot
+	url = https://github.com/vraj138/IncidentPilot.git
