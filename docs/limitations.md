@@ -49,6 +49,15 @@ each item says what would change in a real deployment.
 - **Incidents open by polling.** `make investigate` or the incidents CLI reads the firing
   alerts; there is no Alertmanager webhook.
 
+## Fleet view
+- **One service per product** in the demo, so team routing and root-cause service are the same
+  measurement here. The catalog supports many services per product.
+- **Not multi-tenant.** One catalog, one Prometheus, no accounts; the connector-based SaaS shape
+  is designed (design.md 3.5) but not built.
+- **Intake de-duplication is coarse:** one open incident per product at a time, and a 10-minute
+  cooldown after an incident closes. Two separate faults in one product inside that window are
+  merged into one incident.
+
 ## Evaluation
 - **Scenarios are written by the same person who built the agent.** Mitigations: red herrings,
   multiple variants, answer keys written before any agent run, and scenarios published with

@@ -31,6 +31,9 @@ Incident states: OPEN → INVESTIGATING → PROPOSED → APPROVED → EXECUTING 
 RESOLVED | ESCALATED. Typed actions: `rollback`, `restart`, `set_flag` (`scale` is out of scope).
 The control-plane Postgres is separate from the demo app's Postgres, which faults overload.
 A deploy is a commit to the local deploy repo (`storage/deploy-repo`) plus a container recreate.
+Products, owning teams and service dependencies live in `catalog.toml`; incidents are routed to
+the team owning the root cause. The control plane opens incidents from firing alerts by itself,
+but an investigation (paid) only starts on an explicit click.
 
 ## Repo layout
 ```

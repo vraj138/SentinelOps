@@ -35,6 +35,11 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
             ),
             "errors": str(sum(1 for r in runs if r["status"] == "error")),
         }
+        routed = [r for r in scored if "routing_correct" in r]
+        if routed:
+            row["correct team on first page"] = pct(
+                sum(1 for r in routed if r["routing_correct"]), len(routed)
+            )
         extracted = [r for r in scored if "extracted_correct" in r]
         if extracted:
             row["root cause (same metric, all systems)"] = pct(

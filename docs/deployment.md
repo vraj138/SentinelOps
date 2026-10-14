@@ -49,6 +49,7 @@ All settings are environment variables (or `.env`, which is git-ignored).
 | `PROMETHEUS_URL` | `http://localhost:9090` | metrics and alerts |
 | `CONTROLPLANE_DATABASE_URL` | Postgres on `localhost:5433` | incident state (not the demo app's database) |
 | `CONTROLPLANE_URL` | `http://localhost:8080` | used in links printed by the CLI |
+| `CONTROLPLANE_POLL_ALERTS` | `true` | open incidents from firing alerts automatically (no agent runs) |
 | `DEPLOY_REPO_PATH` | `storage/deploy-repo` | git repo of release settings ("what changed") |
 | `FLAGS_PATH` | `storage/flags/flags.json` | feature flags file |
 | `CONTAINER_EVENTS_PATH` | `storage/events/containers.jsonl` | container lifecycle log |
@@ -70,6 +71,7 @@ before any remediation is enabled.
 | Change history | a git repo of release settings (`mcp_servers/changes.py`) | Point `DEPLOY_REPO_PATH` at a GitOps repo, or implement `deploys` and `show` against your deploy system's API. |
 | Feature flags | a JSON file | Implement `flags` against your flag service. |
 | Runbooks | markdown in a folder | Point `RUNBOOKS_DIR` at your runbooks; keep them procedural, not tied to past incidents. |
+| Products and teams | `catalog.toml` | List your products, owning teams, services and dependencies; incidents are routed from it. |
 | Services in scope | `gateway`, `orders`, `payments` | The allowlist in `mcp_servers/common.py` (`SERVICES`) and `sentinelops/controlplane/actions.py`. |
 | Remediation | deploy repo, flags file, `docker compose` (`sentinelops/stack/`) | Implement the `Runtime` protocol (recreate, restart) and the release write for your platform. Leave this until diagnosis is trusted. |
 
@@ -106,3 +108,5 @@ can be moved closer to the system it reads without changing the agent.
 
 See the README's Results section and [design doc section 7](design.md#7-evaluation-plan).
 `make bench-dry` is free and checks the harness. Paid steps all require `--confirm-spend`.
+Stop the control plane while benchmarking: its alert intake would open incidents for every
+injected fault (harmless, but it clutters the incident list).

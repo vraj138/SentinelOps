@@ -5,12 +5,16 @@ OPEN -> INVESTIGATING -> PROPOSED -> APPROVED -> EXECUTING -> VERIFYING -> RESOL
 Approval exists only here (web page / CLI), never as an agent tool.
 """
 
+import secrets
 from datetime import UTC, datetime
 from pathlib import Path
 
 from mcp_servers.common import mask_secrets
+from sentinelops import routing
 from sentinelops.agent.audit import AuditLog
 from sentinelops.agent.investigator import InvestigationResult
+from sentinelops.catalog import Catalog
+from sentinelops.catalog import load as load_catalog
 from sentinelops.controlplane.actions import ActionBackend, ActionError
 from sentinelops.controlplane.models import (
     Alert,
@@ -25,17 +29,24 @@ from sentinelops.controlplane.verify import Verifier
 
 
 def new_incident_id() -> str:
-    return datetime.now(UTC).strftime("INC-%Y%m%dT%H%M%SZ")
+    """Sortable and unique even when several incidents open in the same second."""
+    return datetime.now(UTC).strftime("INC-%Y%m%dT%H%M%SZ-") + secrets.token_hex(2)
 
 
 class ControlPlane:
     def __init__(
-        self, store: IncidentStore, actions: ActionBackend, verifier: Verifier, runs_dir: Path
+        self,
+        store: IncidentStore,
+        actions: ActionBackend,
+        verifier: Verifier,
+        runs_dir: Path,
+        catalog: Catalog | None = None,
     ) -> None:
         self.store = store
         self.actions = actions
         self.verifier = verifier
         self.runs_dir = runs_dir
+        self.catalog = catalog or load_catalog()
 
     def audit(self, incident_id: str) -> AuditLog:
         """The incident's audit log; the investigation writes to the same file."""
@@ -44,14 +55,41 @@ class ControlPlane:
     def open(
         self, alert_context: str, alerts: list[Alert], incident_id: str | None = None
     ) -> Incident:
+        services = [a.service for a in alerts if a.service]
+        likely_owner = routing.owner_from_alerts(self.catalog, services)
         incident = Incident(
-            id=incident_id or new_incident_id(), alert_context=alert_context, alerts=alerts
+            id=incident_id or new_incident_id(),
+            alert_context=alert_context,
+            alerts=alerts,
+            product=likely_owner.id if likely_owner else None,
+            owner_source="alerts" if likely_owner else None,
+            impacted_products=routing.impacted(self.catalog, services),
         )
         self.store.create(incident)
         self.audit(incident.id).record(
-            "incident_opened", incident=incident.id, alerts=[a.model_dump() for a in alerts]
+            "incident_opened",
+            incident=incident.id,
+            alerts=[a.model_dump() for a in alerts],
+            likely_owner=incident.product,
+            impacted_products=incident.impacted_products,
         )
         return incident
+
+    def _owner_updates(self, incident_id: str, service: str, source: str) -> dict:
+        """Re-route the incident to the product that owns `service`, if the catalog knows it."""
+        owner = routing.owner_from_root_cause(self.catalog, service)
+        if owner is None:
+            return {}
+        previous = self.store.get(incident_id).product
+        if owner.id != previous:
+            self.audit(incident_id).record(
+                "rerouted",
+                from_product=previous,
+                to_product=owner.id,
+                team=owner.team,
+                reason=f"{source} points to {service}",
+            )
+        return {"product": owner.id, "owner_source": source}
 
     def start_investigation(self, incident_id: str) -> Incident:
         return self._move(incident_id, State.OPEN, State.INVESTIGATING)
@@ -65,6 +103,7 @@ class ControlPlane:
                 f"investigation escalated: {result.escalation_reason}",
             )
         rca = result.rca
+        owner = self._owner_updates(incident_id, rca.root_cause_service, "investigation")
         action = rca.recommended_action
         if action.kind == "escalate":
             return self.escalate(
@@ -72,6 +111,7 @@ class ControlPlane:
                 State.INVESTIGATING,
                 f"agent recommends escalation: {action.reason}",
                 rca=rca,
+                **owner,
             )
         proposal = ProposedAction(
             kind=action.kind,
@@ -81,12 +121,14 @@ class ControlPlane:
             reason=action.reason,
             proposed_by="agent",
         )
-        return self.propose(incident_id, proposal, State.INVESTIGATING, rca=rca)
+        return self.propose(incident_id, proposal, State.INVESTIGATING, rca=rca, **owner)
 
     def propose(
         self, incident_id: str, proposal: ProposedAction, expected: State = State.OPEN, **updates
     ) -> Incident:
         """Resolve the proposal into an exact action (the dry run). Escalates if it can't."""
+        if proposal.proposed_by == "operator" and proposal.service and "product" not in updates:
+            updates = {**updates, **self._owner_updates(incident_id, proposal.service, "operator")}
         try:
             resolved = self.actions.resolve(proposal)
         except ActionError as exc:

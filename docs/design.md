@@ -141,6 +141,36 @@ release resolved in 36 s; rolling back the gateway decoy instead failed verifica
 stayed at ~17.5%), was undone automatically, and escalated; an approval made stale by a later
 deploy was refused without touching anything.
 
+### 3.4 Fleet view and team routing (built)
+
+- **Service catalog** (`catalog.toml`, validated on load): products, owning teams, services,
+  service dependencies and external dependencies. Every service belongs to exactly one product;
+  a test checks the hard-coded service allowlists match it (the agent's allowlist is *not*
+  derived from the catalog, so editing config can't widen what the agent may touch).
+- **Routing.** At open, the incident is assigned to the product of the most-downstream alerting
+  service and labelled "likely, from alerts". After the investigation it is re-routed to the
+  product owning the diagnosed root-cause service (`external` maps to the product that owns
+  that dependency); the re-route is written to the audit log. Products whose services alerted
+  but aren't the owner are listed as impacted.
+- **Alert intake** polls Prometheus every 15 s and opens incidents for firing alerts, skipping
+  products that already have an open incident or one closed in the last 10 minutes (alerts
+  linger after a fix). Polling instead of an Alertmanager webhook keeps the unauthenticated
+  control plane on localhost and needs no extra container. It never starts an investigation.
+- **Investigate** is an explicit, paid click, guarded like approval (a per-incident token in
+  the form) and serialized by the OPEN -> INVESTIGATING compare-and-set.
+- **Measured:** routing by the alerting service pages the wrong team in 3 of 14 benchmark
+  incidents; routing by SentinelOps' diagnosis pages the right team in 14 of 14.
+
+### 3.5 From fleet view to SaaS (designed, not built)
+
+The production shape is a hosted control plane plus a **connector** installed inside each
+customer's network. The connector runs the read-only MCP tool servers next to the customer's
+Prometheus, logs, runtime and deploy system, so raw telemetry and credentials never leave their
+network; the cloud side sees only tool results. Remediation goes through the connector too, and
+only after an approval in the hosted UI. On top of that it needs: tenants and data isolation,
+SSO with roles (who may approve which product's fixes), per-product alert webhooks, per-tenant
+budgets, and a queue so many investigations can run at once. None of this is built.
+
 ## 4. Safety design
 
 The model is treated as an **untrusted planner**: useful for reasoning, never trusted with direct

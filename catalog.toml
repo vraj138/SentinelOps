@@ -1,0 +1,27 @@
+# Service catalog: which team owns which product, what each product runs, and what it calls.
+# Incidents are routed to the owning product's team; products they cascade into are "impacted".
+
+[[products]]
+id = "edge"
+name = "Edge Gateway"
+team = "edge-team"
+description = "Public checkout API in front of the order flow."
+services = ["gateway"]
+depends_on = ["orders"]
+
+[[products]]
+id = "orders"
+name = "Orders"
+team = "commerce-team"
+description = "Order intake and storage (Postgres)."
+services = ["orders"]
+depends_on = ["payments"]
+
+[[products]]
+id = "payments"
+name = "Payments"
+team = "payments-team"
+description = "Charges cards through an external payment provider."
+services = ["payments"]
+depends_on = []
+external_dependencies = ["payment provider"]

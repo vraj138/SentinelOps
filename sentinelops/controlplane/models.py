@@ -1,5 +1,6 @@
 """Incident records and the state machine they move through."""
 
+import secrets
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal
@@ -97,3 +98,8 @@ class Incident(BaseModel):
     rolled_back: bool = False
     escalation_reason: str | None = None
     history: list[dict[str, Any]] = Field(default_factory=list)
+    # Routing. Optional so incidents stored before the catalog existed still load.
+    product: str | None = None  # owning product id: the team that gets paged
+    owner_source: Literal["alerts", "investigation", "operator"] | None = None
+    impacted_products: list[str] = Field(default_factory=list)
+    investigate_token: str = Field(default_factory=lambda: secrets.token_hex(16))

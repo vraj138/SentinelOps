@@ -18,8 +18,9 @@ from mcp_servers.metrics import PrometheusBackend
 from sentinelops.agent.audit import AuditLog
 from sentinelops.agent.investigator import Budget, Investigator
 from sentinelops.agent.policy import PolicyGate
+from sentinelops.catalog import load as load_catalog
 from sentinelops.config import ROOT, Settings
-from sentinelops.evals import report, v1_baseline
+from sentinelops.evals import heuristic, report, routing_score, v1_baseline
 from sentinelops.evals.cleanslate import CleanSlate
 from sentinelops.evals.extract import CALIBRATION as EXTRACT_CALIBRATION
 from sentinelops.evals.extract import Extractor
@@ -172,6 +173,18 @@ def cmd_extract(args: argparse.Namespace, settings: Settings) -> None:
     print(report.markdown(records))
 
 
+def cmd_baseline(args: argparse.Namespace, settings: Settings) -> None:
+    """Score the naive rule (blame the most-downstream alerting service). Free."""
+    heuristic.run(Path(args.results))
+    print(report.markdown(report.load(Path(args.results))))
+
+
+def cmd_routing(args: argparse.Namespace, settings: Settings) -> None:
+    """Score 'correct team on the first page' for every system. Free."""
+    routing_score.score(Path(args.results), Path(args.recordings), load_catalog())
+    print(report.markdown(report.load(Path(args.results))))
+
+
 def cmd_report(args: argparse.Namespace, settings: Settings) -> None:
     text = report.markdown(report.load(Path(args.results)))
     (Path(args.results).parent / "summary.md").write_text(text + "\n")
@@ -215,7 +228,10 @@ def main() -> None:
     )
     for p in (v1, judge, extract):
         p.add_argument("--confirm-spend", action="store_true", help="required (paid API calls)")
-    for p in (run, v1, judge, extract, sub.add_parser("report")):
+    baseline = sub.add_parser("baseline", help="score the naive rule baseline (free)")
+    routing = sub.add_parser("routing", help="score correct team on first page (free)")
+    routing.add_argument("--recordings", default=str(RECORDINGS))
+    for p in (run, v1, judge, extract, baseline, routing, sub.add_parser("report")):
         p.add_argument("--results", default=str(RESULTS))
     sub.add_parser("replay").add_argument("run_id")
     args = parser.parse_args()
@@ -224,6 +240,8 @@ def main() -> None:
         "v1": cmd_v1,
         "judge": cmd_judge,
         "extract": cmd_extract,
+        "baseline": cmd_baseline,
+        "routing": cmd_routing,
         "report": cmd_report,
         "replay": cmd_replay,
     }

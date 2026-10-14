@@ -4,7 +4,11 @@ Run with `make controlplane` (uvicorn, http://localhost:8080). Pages are server-
 every value is escaped. Approving starts execution and verification in the background.
 """
 
+import asyncio
 import json
+import threading
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import datetime
 from html import escape
 from pathlib import Path
@@ -14,13 +18,26 @@ from fastapi import BackgroundTasks, FastAPI, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from mcp_servers.common import mask_secrets
+from mcp_servers.metrics import PrometheusBackend
 from sentinelops.config import ROOT, Settings
 from sentinelops.controlplane import build_control_plane
 from sentinelops.controlplane.actions import ActionError
+from sentinelops.controlplane.alerts import firing_alerts
+from sentinelops.controlplane.fleet import (
+    Metrics,
+    owner_label,
+    product_health,
+    render_fleet,
+    render_fleet_product,
+    status_pill,
+)
+from sentinelops.controlplane.intake import AlertIntake
 from sentinelops.controlplane.models import Incident, State
 from sentinelops.controlplane.service import ControlPlane
 from sentinelops.controlplane.store import StaleTransition
 from sentinelops.evals import report
+from sentinelops.investigate import has_anthropic_credentials
+from sentinelops.investigate import investigate as investigate_cli
 
 RESULTS = ROOT / "evals" / "results" / "results.jsonl"
 STATE_COLORS = {
@@ -78,7 +95,10 @@ def tool_records(plane: ControlPlane, incident_id: str) -> dict[str, dict[str, A
     return {r["id"]: r for r in records if r.get("kind") == "tool_call"}
 
 
-NAV = '<p class="muted"><a href="/">Incidents</a> &middot; <a href="/benchmark">Benchmark</a></p>'
+NAV = (
+    '<p class="muted"><a href="/">Fleet</a> &middot; <a href="/incidents">Incidents</a> '
+    '&middot; <a href="/benchmark">Benchmark</a></p>'
+)
 
 
 def audit_records(plane: ControlPlane, incident_id: str) -> list[dict[str, Any]]:
@@ -138,6 +158,32 @@ def render_incident(plane: ControlPlane, incident: Incident) -> str:
         f'<p class="muted">opened {incident.created_at:%Y-%m-%d %H:%M:%S} UTC</p>',
         f'<div class="card"><pre>{escape(incident.alert_context)}</pre></div>',
     ]
+    impacted = [
+        plane.catalog.product(p).name for p in incident.impacted_products if p != incident.product
+    ]
+    owner = (
+        f'<div class="card"><b>Paged:</b> {owner_label(plane, incident)}'
+        + (
+            f'<p class="muted">Also impacted: {escape(", ".join(impacted))}. '
+            "Their alerts are symptoms of this incident, not their own fault.</p>"
+            if impacted and incident.owner_source == "investigation"
+            else (
+                f'<p class="muted">Also alerting: {escape(", ".join(impacted))}.</p>'
+                if impacted
+                else ""
+            )
+        )
+        + "</div>"
+    )
+    parts.append(owner)
+    if incident.state == State.OPEN:
+        parts.append(
+            f'<form method="post" action="/incidents/{escape(incident.id)}/investigate">'
+            f'<input type="hidden" name="token" value="{escape(incident.investigate_token)}">'
+            '<button class="approve">Investigate with the agent (~$0.10)</button>'
+            '<span class="muted">Read-only: it gathers evidence and proposes a fix for approval.</span>'
+            "</form>"
+        )
     if incident.escalation_reason:
         parts.append(
             f'<div class="card bad"><b>Escalated:</b> {escape(incident.escalation_reason)}</div>'
@@ -222,32 +268,99 @@ def public(incident: Incident) -> dict[str, Any]:
     data = incident.model_dump(mode="json")
     if data.get("action"):
         data["action"].pop("payload", None)
+    data.pop("investigate_token", None)
     return mask_secrets(data)
 
 
-def create_app(plane: ControlPlane, results_path: Path = RESULTS) -> FastAPI:
-    app = FastAPI(title="SentinelOps control plane")
+def create_app(
+    plane: ControlPlane,
+    results_path: Path = RESULTS,
+    metrics: Metrics | None = None,
+    investigate: Callable[[str], None] | None = None,
+    lifespan: Callable[[FastAPI], AbstractAsyncContextManager[None]] | None = None,
+) -> FastAPI:
+    """The control-plane web app. `metrics` powers live health; `investigate(incident_id)`
+    runs the agent for an incident already moved to INVESTIGATING."""
+    app = FastAPI(title="SentinelOps control plane", lifespan=lifespan)
 
     @app.get("/", response_class=HTMLResponse)
-    def index() -> HTMLResponse:
+    def fleet() -> HTMLResponse:
+        incidents = plane.store.list(limit=500)
+        body = (
+            "<h1>SentinelOps</h1>" + NAV + "<p class=muted>Every product's live health and "
+            "incidents. Incidents are paged to the team that owns the root cause, not the team "
+            "whose service alerted first.</p>" + render_fleet(plane, metrics, incidents)
+        )
+        return page("SentinelOps fleet", body, refresh=True)
+
+    def incident_rows(incidents: list[Incident]) -> str:
         rows = []
-        for i in plane.store.list():
+        for i in incidents:
             stats = run_stats(audit_records(plane, i.id))
             cost = format_cost(stats) if stats else "-"
-            calls = str(stats["tool_calls"]) if stats else "-"
-            alerts = ", ".join(f"{a.name}({a.service})" for a in i.alerts) or "-"
+            impacted = ", ".join(p for p in i.impacted_products if p != i.product) or "-"
             rows.append(
                 f'<tr><td><a href="/incidents/{escape(i.id)}">{escape(i.id)}</a></td>'
-                f"<td>{state_pill(i.state)}</td><td>{escape(alerts)}</td>"
-                f"<td>{calls}</td><td>{cost}</td></tr>"
+                f"<td>{state_pill(i.state)}</td><td>{owner_label(plane, i)}</td>"
+                f"<td>{escape(impacted)}</td><td>{cost}</td></tr>"
             )
-        body = (
-            "<h1>SentinelOps</h1>" + NAV + "<p class=muted>Incidents: evidence, proposed fix, "
-            "human approval, verification.</p><div class=card><table><tr><th>Incident</th>"
-            "<th>State</th><th>Alerts</th><th>Tool calls</th><th>Agent cost</th></tr>"
-            f"{''.join(rows)}</table></div>"
+        return (
+            "<div class=card><table><tr><th>Incident</th><th>State</th><th>Paged</th>"
+            f"<th>Also impacted</th><th>Agent cost</th></tr>{''.join(rows)}</table></div>"
         )
-        return page("SentinelOps", body)
+
+    @app.get("/incidents", response_class=HTMLResponse)
+    def incident_list(product: str = "", team: str = "", state: str = "") -> HTMLResponse:
+        incidents = plane.store.list(limit=500)
+        if product:
+            incidents = [i for i in incidents if i.product == product]
+        if team:
+            owned = {p.id for p in plane.catalog.products if p.team == team}
+            incidents = [i for i in incidents if i.product in owned]
+        if state:
+            incidents = [i for i in incidents if i.state.value == state.upper()]
+        options = "".join(
+            f'<option value="{escape(p.id)}"{" selected" if p.id == product else ""}>'
+            f"{escape(p.name)}</option>"
+            for p in plane.catalog.products
+        )
+        states = "".join(
+            f"<option{' selected' if s.value == state.upper() else ''}>{s.value}</option>"
+            for s in State
+        )
+        filters = (
+            '<form method="get"><select name="product"><option value="">all products</option>'
+            f'{options}</select><select name="state"><option value="">all states</option>'
+            f"{states}</select><button class=approve>Filter</button></form>"
+        )
+        body = "<h1>Incidents</h1>" + NAV + filters + incident_rows(incidents)
+        return page("Incidents", body)
+
+    @app.get("/products/{product_id}", response_class=HTMLResponse)
+    def product_page(product_id: str) -> HTMLResponse:
+        try:
+            product = plane.catalog.product(product_id)
+        except StopIteration as exc:
+            raise HTTPException(404, f"no product {product_id!r}") from exc
+        overall, _ = product_health(metrics, product)
+        incidents = plane.store.list(limit=500)
+        owned = [i for i in incidents if i.product == product.id]
+        impacting = [
+            i for i in incidents if product.id in i.impacted_products and i.product != product.id
+        ]
+        deps = ", ".join(product.depends_on + product.external_dependencies) or "nothing"
+        body = (
+            f"<h1>{escape(product.name)} {status_pill(overall)}</h1>"
+            + NAV
+            + f'<p class="muted">{escape(product.team)} &middot; services: '
+            f"{escape(', '.join(product.services))} &middot; calls: {escape(deps)}</p>"
+            + render_fleet_product(plane, metrics, product, incidents)
+            + "<h2>Incidents owned by this team</h2>"
+            + incident_rows(owned)
+            + "<h2>Other teams' incidents that impacted this product</h2>"
+            + incident_rows(impacting)
+        )
+        return page(product.name, body)
 
     @app.get("/benchmark", response_class=HTMLResponse)
     def benchmark() -> HTMLResponse:
@@ -298,7 +411,12 @@ def create_app(plane: ControlPlane, results_path: Path = RESULTS) -> FastAPI:
     @app.get("/incidents/{incident_id}", response_class=HTMLResponse)
     def incident_page(incident_id: str) -> HTMLResponse:
         incident = get_or_404(incident_id)
-        busy = incident.state in (State.APPROVED, State.EXECUTING, State.VERIFYING)
+        busy = incident.state in (
+            State.INVESTIGATING,
+            State.APPROVED,
+            State.EXECUTING,
+            State.VERIFYING,
+        )
         return page(incident.id, render_incident(plane, incident), refresh=busy)
 
     @app.post("/incidents/{incident_id}/approve")
@@ -331,6 +449,23 @@ def create_app(plane: ControlPlane, results_path: Path = RESULTS) -> FastAPI:
             raise HTTPException(409, str(exc)) from exc
         return RedirectResponse(f"/incidents/{incident_id}", status_code=303)
 
+    @app.post("/incidents/{incident_id}/investigate")
+    def investigate_incident(
+        incident_id: str, background: BackgroundTasks, token: str = Form(...)
+    ) -> RedirectResponse:
+        """Start the agent (paid). The token proves the click came from this page (CSRF)."""
+        incident = get_or_404(incident_id)
+        if investigate is None:
+            raise HTTPException(409, "investigation is not configured (no Anthropic credentials)")
+        if token != incident.investigate_token:
+            raise HTTPException(409, "stale or forged form; reload the page")
+        try:
+            plane.start_investigation(incident_id)
+        except StaleTransition as exc:
+            raise HTTPException(409, str(exc)) from exc
+        background.add_task(investigate, incident_id)
+        return RedirectResponse(f"/incidents/{incident_id}", status_code=303)
+
     @app.get("/api/incidents/{incident_id}")
     def incident_json(incident_id: str) -> dict[str, Any]:
         return public(get_or_404(incident_id))
@@ -339,5 +474,34 @@ def create_app(plane: ControlPlane, results_path: Path = RESULTS) -> FastAPI:
 
 
 def main_app() -> FastAPI:
-    """Factory for uvicorn (`--factory`): connects to the real control plane."""
-    return create_app(build_control_plane(Settings()))
+    """Factory for uvicorn (`--factory`): real control plane, live metrics, alert intake, and
+    the Investigate button when Anthropic credentials are configured."""
+    settings = Settings()
+    plane = build_control_plane(settings)
+    prometheus = PrometheusBackend(settings.prometheus_url)
+
+    def run_investigation(incident_id: str) -> None:
+        incident = plane.store.get(incident_id)
+        try:
+            result = asyncio.run(investigate_cli(settings, incident.alert_context, incident_id))
+        except Exception as exc:  # noqa: BLE001 - the incident escalates with the reason
+            plane.escalate(incident_id, State.INVESTIGATING, f"investigation failed: {exc!r}")
+            return
+        plane.record_investigation(incident_id, result)
+
+    intake = AlertIntake(plane, lambda: firing_alerts(settings.prometheus_url))
+    stop = threading.Event()
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        if settings.controlplane_poll_alerts:
+            threading.Thread(target=intake.run_forever, args=(stop,), daemon=True).start()
+        yield
+        stop.set()
+
+    return create_app(
+        plane,
+        metrics=prometheus,
+        investigate=run_investigation if has_anthropic_credentials(settings) else None,
+        lifespan=lifespan,
+    )

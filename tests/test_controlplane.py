@@ -1,6 +1,7 @@
 """Tests for the control plane: actions, state machine, verification, web UI (no Docker)."""
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -498,7 +499,7 @@ def test_incident_page_shows_investigation_cost(tmp_path: Path, stack) -> None:
     client = TestClient(create_app(cp, results_path=tmp_path / "none.jsonl"))
 
     page = client.get(f"/incidents/{incident.id}").text
-    index = client.get("/").text
+    index = client.get("/incidents").text
 
     assert "Investigation" in page and "1,200" in page and "$0.250" in page and "42s" in page
     assert "(1 failed)" in page
@@ -548,3 +549,140 @@ def test_benchmark_page_empty_and_with_results(tmp_path: Path, stack) -> None:
     page = client.get("/benchmark").text
     assert "correct action" in page and "100% (1/1)" in page
     assert "bad_deploy/c" in page and "<td>full</td>" in page
+
+
+# fleet, routing and intake
+
+
+class HealthMetrics:
+    """Prometheus stand-in: payments is failing, everything else healthy."""
+
+    def query(self, promql: str) -> list[dict]:
+        if promql.startswith("up"):
+            return [{"metric": {}, "value": [0, "1"]}]
+        if "5.." in promql:
+            return [{"metric": {}, "value": [0, "0.3" if '"payments"' in promql else "0"]}]
+        return [{"metric": {}, "value": [0, "0.05"]}]
+
+
+class DownMetrics:
+    def query(self, promql: str) -> list[dict]:
+        from mcp_servers.common import ToolError
+
+        raise ToolError("Prometheus is unreachable")
+
+
+def test_open_routes_to_likely_owner_and_lists_impacted(tmp_path: Path, stack) -> None:
+    cp = plane(tmp_path, stack)
+    alerts = [Alert(name="HighErrorRate", service=s) for s in ("gateway", "orders")]
+
+    incident = cp.open("ctx", alerts)
+
+    assert (incident.product, incident.owner_source) == ("orders", "alerts")
+    assert incident.impacted_products == ["edge", "orders"]
+
+
+def test_investigation_reroutes_to_the_root_cause_owner(tmp_path: Path, stack) -> None:
+    bad_payments_deploy(stack[0])
+    cp = plane(tmp_path, stack)
+    alerts = [Alert(name="HighErrorRate", service=s) for s in ("gateway", "orders")]
+    incident = cp.open("ctx", alerts)
+    cp.start_investigation(incident.id)
+
+    done = cp.record_investigation(
+        incident.id, InvestigationResult(status="rca", rca=rca("rollback", "payments"), totals={})
+    )
+
+    assert (done.product, done.owner_source) == ("payments", "investigation")
+    lines = (tmp_path / "runs" / incident.id / "audit.jsonl").read_text()
+    assert '"rerouted"' in lines and '"to_product": "payments"' in lines
+
+
+def test_fleet_shows_live_health_per_product(tmp_path: Path, stack) -> None:
+    cp = plane(tmp_path, stack)
+    page = (
+        TestClient(create_app(cp, results_path=tmp_path / "x", metrics=HealthMetrics()))
+        .get("/")
+        .text
+    )
+
+    assert "Payments" in page and "payments-team" in page
+    assert "degraded" in page and "30.0%" in page and "healthy" in page
+
+
+def test_fleet_says_metrics_unavailable_instead_of_crashing(tmp_path: Path, stack) -> None:
+    cp = plane(tmp_path, stack)
+    page = (
+        TestClient(create_app(cp, results_path=tmp_path / "x", metrics=DownMetrics())).get("/").text
+    )
+
+    assert "metrics unavailable" in page
+
+
+def test_incident_list_filters_by_product(tmp_path: Path, stack) -> None:
+    cp = plane(tmp_path, stack)
+    a = cp.open("ctx", [Alert(name="HighErrorRate", service="payments")])
+    b = cp.open("ctx", [Alert(name="HighErrorRate", service="gateway")])
+    client = TestClient(create_app(cp, results_path=tmp_path / "x"))
+
+    page = client.get("/incidents?product=payments").text
+
+    assert a.id in page and b.id not in page
+    assert client.get("/products/payments").status_code == 200
+    assert client.get("/products/nope").status_code == 404
+
+
+def test_investigate_button_needs_token_and_credentials(tmp_path: Path, stack) -> None:
+    cp = plane(tmp_path, stack)
+    incident = cp.open("ctx", [Alert(name="HighErrorRate", service="payments")])
+    started: list[str] = []
+    client = TestClient(create_app(cp, results_path=tmp_path / "x", investigate=started.append))
+
+    assert "Investigate with the agent" in client.get(f"/incidents/{incident.id}").text
+    forged = client.post(f"/incidents/{incident.id}/investigate", data={"token": "guess"})
+    assert forged.status_code == 409 and started == []
+
+    client.post(f"/incidents/{incident.id}/investigate", data={"token": incident.investigate_token})
+    assert started == [incident.id]
+    assert cp.store.get(incident.id).state == State.INVESTIGATING
+    again = client.post(
+        f"/incidents/{incident.id}/investigate", data={"token": incident.investigate_token}
+    )
+    assert again.status_code == 409 and started == [incident.id]
+
+    no_key = TestClient(create_app(cp, results_path=tmp_path / "x", investigate=None))
+    other = cp.open("ctx", [Alert(name="HighErrorRate", service="orders")])
+    resp = no_key.post(
+        f"/incidents/{other.id}/investigate", data={"token": other.investigate_token}
+    )
+    assert resp.status_code == 409
+
+
+def test_intake_opens_once_and_respects_cooldown(tmp_path: Path, stack) -> None:
+    from datetime import timedelta
+
+    from sentinelops.controlplane.intake import AlertIntake
+
+    cp = plane(tmp_path, stack)
+    alerts = [Alert(name="HighErrorRate", service="payments")]
+    clock = [datetime.now(UTC)]
+    intake = AlertIntake(cp, lambda: ("ctx", alerts), now=lambda: clock[0])
+
+    first = intake.tick()
+    assert first is not None and intake.tick() is None  # still open: no duplicate
+
+    cp.escalate(first, State.OPEN, "handled")
+    assert intake.tick() is None  # just closed: within cooldown
+    clock[0] += timedelta(minutes=11)
+    assert intake.tick() is not None  # alerts still firing long after: new incident
+    assert AlertIntake(cp, lambda: ("ctx", [])).tick() is None  # nothing firing
+
+
+def test_old_incidents_without_routing_fields_still_load(tmp_path: Path, stack) -> None:
+    legacy = Incident(id="INC-old", alert_context="ctx").model_dump(mode="json")
+    for field in ("product", "owner_source", "impacted_products", "investigate_token"):
+        legacy.pop(field)
+
+    loaded = Incident.model_validate(legacy)
+
+    assert loaded.product is None and loaded.impacted_products == []

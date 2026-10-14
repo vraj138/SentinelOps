@@ -531,3 +531,34 @@ def test_report_shows_same_metric_row(tmp_path: Path) -> None:
     assert summary["sentinelops"]["root cause (same metric, all systems)"] == "100% (1/1)"
     assert summary["v1-shipped"]["root cause (same metric, all systems)"] == "0% (0/1)"
     assert summary["v1-shipped"]["hedged between causes"] == "100% (1/1)"
+
+
+def test_naive_rule_guesses_most_downstream_and_is_scored_like_the_agent(tmp_path: Path) -> None:
+    from sentinelops.evals import heuristic
+    from sentinelops.evals.runner import RunRecord, append
+
+    assert heuristic.guess(["HighErrorRate(gateway)", "HighErrorRate(orders)"]) == "orders"
+    results = tmp_path / "results.jsonl"
+    for sid, alerts in [
+        ("bad_deploy/a", ["HighErrorRate(payments)"]),
+        ("slow_dependency/a", ["HighLatencyP95(gateway)"]),
+    ]:
+        append(
+            results,
+            RunRecord(
+                run_id=sid.replace("/", "-"),
+                scenario_id=sid,
+                repeat=1,
+                system="sentinelops",
+                started_at="t",
+                manifested=True,
+                alerts_fired=alerts,
+                status="rca",
+            ),
+        )
+
+    records = heuristic.run(results)
+
+    grades = {r.scenario_id: r.score.action for r in records if r.score}
+    assert grades == {"bad_deploy/a": "full", "slow_dependency/a": "wrong"}
+    assert heuristic.run(results) == []

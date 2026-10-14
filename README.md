@@ -75,6 +75,24 @@ Each incident moves through a strict sequence of states:
 OPEN → INVESTIGATING → PROPOSED → APPROVED → EXECUTING → VERIFYING → RESOLVED | ESCALATED
 ```
 
+## Fleet view: many products, the right team paged
+
+At a company with dozens or hundreds of products, alerts fire where users feel the pain, not
+where the cause is, so the team that gets paged is often the wrong one. SentinelOps keeps a
+**service catalog** (`catalog.toml`: products, owning teams, services, dependencies) and routes
+each incident to the team that owns the **root cause**:
+
+- When alerts fire, the control plane opens an incident on its own (free; no agent runs) and
+  pages the *likely* owner, labelled as a guess from the alerts.
+- **Investigate** runs the agent (a button on the incident, about $0.10). It re-routes the
+  incident to the owner of the diagnosed cause and tells the other products why their alerts
+  are symptoms, not their fault.
+- The **fleet page** shows every product's live health (from Prometheus), its open incidents,
+  incidents awaiting approval, time to resolve, and incidents other teams caused that impacted it.
+
+The demo stack is split into three team-owned products: Edge Gateway (`edge-team`), Orders
+(`commerce-team`), Payments (`payments-team`, which also owns the external payment provider).
+
 ## Safety model
 
 These are design rules, enforced in code:
@@ -165,7 +183,7 @@ make down                                                   # stop everything
 | orders | http://localhost:8001 |
 | payments | http://localhost:8002 |
 | Prometheus | http://localhost:9090 |
-| Control plane (approvals) | http://localhost:8080 (`make controlplane`) |
+| Control plane (fleet, incidents, approvals, benchmark) | http://localhost:8080 (`make controlplane`) |
 | Demo Postgres | `localhost:5432` |
 | Control-plane Postgres | `localhost:5433` |
 
@@ -183,7 +201,9 @@ make down                                                   # stop everything
 - [x] Benchmark harness: clean-slate runs, scoring vs answer keys, judge, v1 baseline, replay
 - [x] SentinelOps benchmark: 14 scenarios (incl. 4 hard variants), 1 run each
 - [x] v1 baseline comparison (same alerts, same scoring)
+- [x] Fleet view: service catalog, team routing, alert intake, Investigate button
 - [ ] More repeats per scenario, and a decoy deploy that lands before the fault
+- [ ] Multi-tenant SaaS: in-network connector, accounts and roles ([designed](docs/design.md#35-from-fleet-view-to-saas-designed-not-built), not built)
 - [x] Docs: [deployment guide](docs/deployment.md), [limitations](docs/limitations.md)
 - [x] CI: lint and tests on every push
 - [ ] Demo video ([script](docs/demo.md) ready)
@@ -195,16 +215,27 @@ make down                                                   # stop everything
 events and metrics), injects the fault, waits for a real alert, then investigates. v1 gets the
 exact same alert text for each run.
 
-| | SentinelOps (v2) | v1, as shipped | v1 + our runbooks |
-|---|---|---|---|
-| **Correct root cause** (right service, one cause) | **100%** (14/14) | 0% (0/14) | 0% (0/14) |
-| Correct root cause, counting hedged answers | 100% (14/14) | 14% (2/14) | 21% (3/14) |
-| Hedged between causes ("X or Y") | 0% | 29% | 86% |
-| Correct proposed fix | 100% (14/14) | - | - |
-| Harmful proposal (e.g. rolling back a red-herring deploy) | 0% (0/14) | - | - |
-| Correct escalation | 100% (14/14) | - | - |
-| Median time from alert to answer | 30 s | 8 s | 7 s |
-| Mean cost per incident | $0.10 | under $0.01 | under $0.01 |
+| | SentinelOps (v2) | Naive rule* | v1, as shipped | v1 + our runbooks |
+|---|---|---|---|---|
+| **Correct proposed fix** | **100%** (14/14) | 64% (9/14) | - | - |
+| **Harmful proposal** (e.g. rolling back the wrong service) | **0%** (0/14) | 36% (5/14) | - | - |
+| Correct escalation | 100% (14/14) | 86% (12/14) | - | - |
+| **Correct team paged first** | **100%** (14/14) | 79% (11/14) | 14% (2/14) | 21% (3/14) |
+| Correct root-cause service | 100% (14/14) | 79% (11/14) | 0% (0/14) | 0% (0/14) |
+| Root-cause service, counting hedged answers | 100% | 79% | 14% (2/14) | 21% (3/14) |
+| Median time from alert to answer | 30 s | instant | 8 s | 7 s |
+| Mean cost per incident | $0.10 | $0 | under $0.01 | under $0.01 |
+
+\*Naive rule: blame the most-downstream service that alerted and roll it back, with no
+investigation. This is also how incidents are usually routed today: page the owner of the
+service that alerted. **It pages the wrong team in 3 of 14 incidents**, for example paging the
+edge team when the payment provider is slow. In this demo stack each product has one service,
+so "correct team" and "correct root-cause service" are the same measurement; in a company where
+products own many services they would diverge. It shows how much the alert pattern alone gives away: it names the right service
+in 11 of 14 scenarios, so **root-cause service alone is a weak signal**. Where SentinelOps
+differs is in the cases that need investigation (a cause that never alerted itself, an external
+dependency), in naming the exact change, in choosing the right kind of fix (rollback, flag,
+or escalate), and in never proposing a harmful one.
 
 **What v1 does wrong:** with no live evidence (its metrics client import fails silently), it
 answers from its runbook corpus. As shipped it blamed "exhausted database connections" in most

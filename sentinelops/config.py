@@ -26,6 +26,7 @@ class Settings(BaseSettings):
         "postgresql://sentinelops:sentinelops@localhost:5433/sentinelops"
     )
     controlplane_url: str = "http://localhost:8080"
+    controlplane_poll_alerts: bool = True  # open incidents from firing alerts (free; no agent)
 
     # Tool servers. The agent's tools may only see these locations.
     deploy_repo_path: Path = ROOT / "storage" / "deploy-repo"
