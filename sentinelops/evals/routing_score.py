@@ -3,7 +3,8 @@ answer key's owning team. Free: derived from answers already recorded.
 
 - sentinelops and naive-agent: the product owning the diagnosed root-cause service.
 - naive-rule: the owner of the most-downstream alerting service (today's alert-owner routing).
-- v1: the product owning the service its answer blames; "database" or "unknown" pages no team.
+- v1: the product owning the service its answer blames; "database" pages the database's owner,
+  "unknown" pages no team.
 """
 
 import json

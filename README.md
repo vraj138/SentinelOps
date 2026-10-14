@@ -229,20 +229,26 @@ metrics), injects the fault, waits for a real alert, then gives every system the
   [`naive_agent.py`](sentinelops/evals/naive_agent.py).
 - **Naive rule:** no model. Blame the most-downstream service that alerted and roll it back.
   This is also how incidents are usually routed today: page the owner of the service that alerted.
+- **v1 (IncidentPilot):** the RAG copilot this project replaces (gpt-4o-mini), as shipped and
+  with our runbooks added to its corpus. It gets each run's alert text and can't act.
 
-| | SentinelOps | Naive agent | Naive rule |
-|---|---|---|---|
-| **Correct proposed fix** | **100%** (17/17) | **100%** (17/17) | 41% (7/17) |
-| **Harmful proposal** (e.g. rolling back the wrong service) | **0%** (0/17) | **0%** (0/17) | 59% (10/17) |
-| Correct root-cause service | 100% (17/17) | 100% (17/17) | 65% (11/17) |
-| Correct team paged first | 100% (17/17) | 100% (17/17) | 65% (11/17) |
-| Escalated when only a human could fix it | 4/4 | 4/4 | 0/4 |
-| Escalated although a typed fix existed | 0/13 | 0/13 | 0/13 |
-| **Changes made with no human approval** | **0** (nothing runs before approval) | 13 of 17 runs | - |
-| System healthy after that change | - | 13/13 | - |
-| **Answer passes the evidence check** | **100%** (17/17) | 76% (13/17) | - |
-| Median time from alert to answer | 28 s | 27 s | instant |
-| Mean cost per incident | $0.10 | $0.10 | $0 |
+| | SentinelOps | Naive agent | Naive rule | v1, as shipped | v1 + our runbooks |
+|---|---|---|---|---|---|
+| **Correct proposed fix** | **100%** (17/17) | **100%** (17/17) | 41% (7/17) | - | - |
+| **Harmful proposal** (e.g. rolling back the wrong service) | **0%** (0/17) | **0%** (0/17) | 59% (10/17) | - | - |
+| Correct root-cause service | 100% (17/17) | 100% (17/17) | 65% (11/17) | 6% (1/17)* | 0% (0/17) |
+| Root-cause service, counting hedged answers | 100% | 100% | 65% | 18% (3/17) | 29% (5/17) |
+| **Correct team paged first** | **100%** (17/17) | **100%** (17/17) | 65% (11/17) | 18% (3/17) | 29% (5/17) |
+| Escalated when only a human could fix it | 4/4 | 4/4 | 0/4 | - | - |
+| Escalated although a typed fix existed | 0/13 | 0/13 | 0/13 | - | - |
+| **Changes made with no human approval** | **0** (nothing runs before approval) | 13 of 17 runs | - | - | - |
+| System healthy after that change | - | 13/13 | - | - | - |
+| **Answer passes the evidence check** | **100%** (17/17) | 76% (13/17) | - | - | - |
+| Median time from alert to answer | 28 s | 27 s | instant | 13 s | 9 s |
+| Mean cost per incident | $0.10 | $0.10 | $0 | under $0.01 | under $0.01 |
+
+\*v1's one hit is the DB outage, where its default answer ("the database", given in 15 of 17
+incidents) happened to be right.
 
 **What this shows, and what it doesn't:**
 - **On these 17 scenarios, with Claude Opus 5.5, the naive agent was as accurate as
@@ -274,35 +280,27 @@ metrics), injects the fault, waits for a real alert, then gives every system the
   - The decoy deploy before the fault (`bad_deploy/e`) didn't fool the rule either.
   - Each product still owns one service, so "correct team" and "correct root-cause service" are
     still the same measurement in this stack.
+- **v1 would page the database team for almost everything.** As shipped it blamed the database
+  in 15 of 17 incidents: bad deploys, feature flags, a missing secret, a slow third-party
+  provider. With our runbooks it hedges in every answer and never names a deploy.
 - **Some safety metrics can't be measured yet.** Safe-failure rate (escalating instead of acting
   when wrong) and accuracy by stated confidence need failures to measure. Both agents said
   "high" in 16 runs and "medium" in 1 (the rollback trap), and were right every time.
-
-**v1 (from the first run, 14 scenarios):** v1 couldn't be rerun on this run's recordings (the
-OpenAI account it runs on is out of credit). In the first run (same day, 14 of these scenarios,
-[`evals/results/first-run/`](evals/results/first-run/)):
-
-| | v1, as shipped | v1 + our runbooks |
-|---|---|---|
-| Correct team paged first | 14% (2/14) | 21% (3/14) |
-| Root-cause service | 0% (0/14) | 0% (0/14) |
-| Root-cause service, counting hedged answers | 14% (2/14) | 21% (3/14) |
-| Answer time / cost | about 8 s, under $0.01 | about 7 s, under $0.01 |
 
 **What v1 does wrong:** with no live evidence (its metrics client import fails silently), it
 answers from its runbook corpus. As shipped it blamed "exhausted database connections" in most
 scenarios, including bad deploys, feature flags and a slow third-party provider, invented
 "metric correlations" with DB connection issues, and suggested `ALTER SYSTEM SET
 max_connections = 1000`. Given our runbooks, it hedges instead ("database issues or a recent
-deploy") without ever naming which deploy or service. v1 can't act, so it has no fix scores.
+deploy") without ever naming which deploy. v1 can't act, so it has no fix scores.
 
 **How v1's root cause is scored on the same metric:** an LLM only *extracts* which service each
 answer blames and whether it hedges; scoring is then the same deterministic rule for every
-system. The extractor had to pass 10 hand-labelled cases first (it passed 10/10), and
-SentinelOps' extracted answers matched its structured answers 14/14. A free-form LLM judge was
+system. The extractor has to pass 10 hand-labelled cases first (it passed 10/10), and both
+agents' extracted answers matched their structured answers 17/17. A free-form LLM judge was
 tried first and **not used**: it failed its own calibration (18/24, then 21/24 after one rubric
 clarification), disagreeing with my labels on the feature-flag cases. Both attempts are saved in
-`evals/results/first-run/`.
+`evals/results/first-run/`, with the first run's results (14 scenarios, same day).
 
 **Scenarios:** bad deploy (5 variants), memory leak (2), DB connection exhaustion (2), slow
 external dependency (3), bad feature flag (2), missing secret (2), DB outage (1). Seven include
@@ -327,9 +325,9 @@ trap, a decoy deploy that lands *before* the fault, and the DB outage. Per-run d
   successful tool call, not that the result supports the claim.
 - **Not built yet:** a missing-telemetry scenario (Prometheus goes down mid-incident).
 - **v1's LLM code was never published** to the IncidentPilot repo; the baseline runs a snapshot
-  of the local working copy. Its source files hash to `55765deae9fd...` (SHA-256 from
-  `snapshot_hash`). The hash saved with the first run also covered the vector store v1 builds
-  while running, so it can't be reproduced; that bug is fixed.
+  of the local working copy. Its source files hash to `55765deae9fd...` (SHA-256, in
+  `evals/results/v1_snapshot.json`). The hash saved with the first run also covered the vector
+  store v1 builds while running, so it can't be reproduced; that bug is fixed.
 
 ```bash
 make bench-dry                              # free: scripted model, proves the harness
