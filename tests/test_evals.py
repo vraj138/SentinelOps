@@ -471,3 +471,63 @@ def test_runner_sets_aside_a_crashed_attempts_recording(tmp_path: Path, monkeypa
     assert any(
         p.name.startswith("bad_deploy-a-r1.incomplete-") for p in (tmp_path / "rec").iterdir()
     )
+
+
+# same-metric extraction
+
+
+def test_extracted_correct_matches_the_structured_rule() -> None:
+    from sentinelops.evals.extract import Extraction, correct
+
+    assert correct(Extraction(blamed="payments", hedged=False), "payments", False)
+    assert not correct(Extraction(blamed="payments", hedged=True), "payments", False)
+    assert not correct(Extraction(blamed="database", hedged=False), "orders", False)
+    assert correct(Extraction(blamed="external", hedged=False), "payments", True)
+    assert not correct(Extraction(blamed="external", hedged=False), "payments", False)
+    assert correct(Extraction(blamed="orders", hedged=True), "orders", False, allow_hedge=True)
+    assert not correct(
+        Extraction(blamed="database", hedged=True), "orders", False, allow_hedge=True
+    )
+
+
+def test_extractor_parses_structured_output() -> None:
+    from sentinelops.evals.extract import Extractor
+
+    class Client:
+        def __init__(self) -> None:
+            self.messages = self
+
+        def create(self, **kwargs: Any) -> Any:
+            assert kwargs["output_config"]["format"]["schema"]["required"] == ["blamed", "hedged"]
+            text = json.dumps({"blamed": "database", "hedged": True})
+            return type("M", (), {"content": [type("B", (), {"type": "text", "text": text})()]})()
+
+    got = Extractor(Client()).extract("Potential DB issues or a recent deploy")
+    assert (got.blamed, got.hedged) == ("database", True)
+
+
+def test_report_shows_same_metric_row(tmp_path: Path) -> None:
+    path = tmp_path / "results.jsonl"
+    rows = [
+        {
+            **record("sentinelops", "full"),
+            "extracted": {"blamed": "payments", "hedged": False},
+            "extracted_correct": True,
+        },
+        {
+            "run_id": "r",
+            "scenario_id": "bad_deploy/a",
+            "system": "v1-shipped",
+            "manifested": True,
+            "status": "answered",
+            "extracted": {"blamed": "database", "hedged": True},
+            "extracted_correct": False,
+        },
+    ]
+    write_results(path, rows)
+
+    summary = report.summarize(report.load(path))
+
+    assert summary["sentinelops"]["root cause (same metric, all systems)"] == "100% (1/1)"
+    assert summary["v1-shipped"]["root cause (same metric, all systems)"] == "0% (0/1)"
+    assert summary["v1-shipped"]["hedged between causes"] == "100% (1/1)"

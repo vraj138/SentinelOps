@@ -15,11 +15,14 @@ Verdict = Literal["correct", "partial", "wrong"]
 
 JUDGE_SYSTEM = """\
 You grade incident root-cause analyses against an answer key.
-- correct: names the same faulty component and the same mechanism as the answer key.
-- partial: names the right component but the wrong or a vague mechanism, or names the right
-  mechanism while also blaming something unrelated.
-- wrong: blames a different component, a symptom, or something unrelated; or gives no cause.
-Grade only the root cause. Ignore writing quality, length and confidence."""
+- correct: names the same faulty component AND the same triggering change or mechanism as the
+  answer key, at the level an on-call engineer would act on. It does not need the answer key's
+  level of detail (exact setting names, numbers, or code lines).
+- partial: names the right faulty component, but a different or vague mechanism; or names the
+  right mechanism while also blaming something unrelated. A right component with a different
+  mechanism is always partial, never wrong.
+- wrong: blames a different component, only describes symptoms, or gives no cause.
+Grade only the root cause. Ignore writing quality, length, remediation advice and confidence."""
 
 JUDGE_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -54,7 +57,7 @@ class Judge:
                 }
             ],
             output_config={
-                "effort": "low",
+                "effort": "medium",
                 "format": {"type": "json_schema", "schema": JUDGE_SCHEMA},
             },
         )

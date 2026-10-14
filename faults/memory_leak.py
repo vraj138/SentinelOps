@@ -43,3 +43,30 @@ SCENARIOS = [
         ),
     ),
 ]
+
+SCENARIOS.append(
+    Scenario(
+        fault_type=FaultType.MEMORY_LEAK,
+        variant="b",
+        description=(
+            "hard: orders release with a terse message, then a payments deploy whose message "
+            "sounds like a memory change"
+        ),
+        steps=[
+            Deploy(
+                service="orders",
+                changes={"ORDERS_RECEIPT_CACHE_MAX_ITEMS": "0"},
+                message="update orders config",
+                author="release-bot",
+            ),
+            Deploy(
+                service="payments",
+                message="Increase worker memory buffers",
+                author="payments-team",
+                red_herring=True,
+                wait_before_seconds=30,
+            ),
+        ],
+        ground_truth=SCENARIOS[0].ground_truth,
+    )
+)

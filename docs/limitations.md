@@ -18,10 +18,12 @@ each item says what would change in a real deployment.
   evidence must be gathered before remediation (the agent investigates first by design).
 
 ## Agent
-- **Measured on a small sample.** The first benchmark is 10 runs (one per scenario) on Claude
+- **Measured on a small sample.** The benchmark is 14 runs (one per scenario) on Claude
   Opus 5.5; it shows the system works end to end, not a tight accuracy estimate.
-- **Scenario commit messages are descriptive**, which makes diagnosis easier than with typical
-  real-world commits; terser or misleading messages are a planned harder variant.
+- **Most commit messages are descriptive.** Four hard variants use terse or misleading
+  messages and also passed, but most scenarios still describe their change honestly.
+- **Decoys land after the symptoms start**, so timing alone rules them out. A red-herring
+  deploy that lands just before the fault is a harder, not yet included test.
 - **OpenAI fallback is untested live.** It was written against the SDK's signatures and unit
   tested with fake responses only. Its cost is reported as unknown.
 - **Cost is a lower bound** when a turn is served by a model without a configured price.

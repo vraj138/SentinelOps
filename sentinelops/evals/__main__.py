@@ -1,4 +1,4 @@
-"""Benchmark CLI: `python -m sentinelops.evals <run|v1|judge|report|replay>`.
+"""Benchmark CLI: `python -m sentinelops.evals <run|v1|extract|judge|report|replay>`.
 
 Paid runs need `--confirm-spend`; `--dry-run` uses a scripted model and costs nothing.
 """
@@ -21,10 +21,14 @@ from sentinelops.agent.policy import PolicyGate
 from sentinelops.config import ROOT, Settings
 from sentinelops.evals import report, v1_baseline
 from sentinelops.evals.cleanslate import CleanSlate
+from sentinelops.evals.extract import CALIBRATION as EXTRACT_CALIBRATION
+from sentinelops.evals.extract import Extractor
+from sentinelops.evals.extract import correct as extracted_correct
 from sentinelops.evals.judge import Judge, calibrate
 from sentinelops.evals.judge_cases import CASES
 from sentinelops.evals.replay import ReplayHub
 from sentinelops.evals.runner import BenchmarkRunner, run_v1_from_recordings
+from sentinelops.evals.runner import answer_key as runner_answer_key
 from sentinelops.evals.scripted import ScriptedLLM
 from sentinelops.investigate import build_llm, has_anthropic_credentials, investigate
 from sentinelops.stack.deploy_repo import DeployRepo
@@ -134,6 +138,40 @@ def cmd_judge(args: argparse.Namespace, settings: Settings) -> None:
     print(report.markdown(records))
 
 
+def cmd_extract(args: argparse.Namespace, settings: Settings) -> None:
+    """Extract the blamed service from every answer (all systems), after calibration."""
+    if settings.anthropic_api_key is None:
+        sys.exit("error: extraction needs ANTHROPIC_API_KEY in .env")
+    if not args.confirm_spend:
+        sys.exit("paid run: add --confirm-spend")
+    client = anthropic.Anthropic(api_key=settings.anthropic_api_key.get_secret_value())
+    extractor = Extractor(client, settings.anthropic_model)
+    graded, failures = [], []
+    for text, blamed, hedged in EXTRACT_CALIBRATION:
+        got = extractor.extract(text)
+        graded.append({"text": text, "expected": [blamed, hedged], "got": [got.blamed, got.hedged]})
+        if (got.blamed, got.hedged) != (blamed, hedged):
+            failures.append(f"expected {blamed}/{hedged}, got {got.blamed}/{got.hedged}: {text!r}")
+    path = Path(args.results)
+    (path.parent / "extract_calibration.json").write_text(json.dumps(graded, indent=2))
+    print(f"extractor calibration: {len(graded) - len(failures)}/{len(graded)} cases as expected")
+    if failures:
+        sys.exit("extractor failed calibration; not scoring:\n" + "\n".join(failures))
+    records = report.load(path)
+    for r in records:
+        if r.get("manifested") and r.get("root_cause_text") and "extracted" not in r:
+            key = runner_answer_key(registry.get(r["scenario_id"]))
+            got = extractor.extract(r["root_cause_text"])
+            r["extracted"] = got.model_dump()
+            escalate = key.expected_kind == "escalate"
+            r["extracted_correct"] = extracted_correct(got, key.root_cause_service, escalate)
+            r["extracted_correct_lenient"] = extracted_correct(
+                got, key.root_cause_service, escalate, allow_hedge=True
+            )
+    path.write_text("".join(json.dumps(r) + "\n" for r in records))
+    print(report.markdown(records))
+
+
 def cmd_report(args: argparse.Namespace, settings: Settings) -> None:
     text = report.markdown(report.load(Path(args.results)))
     (Path(args.results).parent / "summary.md").write_text(text + "\n")
@@ -172,9 +210,12 @@ def main() -> None:
     v1.add_argument("--variant", choices=["shipped", "our-runbooks", "both"], default="both")
     v1.add_argument("--recordings", default=str(RECORDINGS))
     judge = sub.add_parser("judge", help="calibrate the judge, then grade root-cause text")
-    for p in (v1, judge):
+    extract = sub.add_parser(
+        "extract", help="same-metric scoring: which service each answer blames"
+    )
+    for p in (v1, judge, extract):
         p.add_argument("--confirm-spend", action="store_true", help="required (paid API calls)")
-    for p in (run, v1, judge, sub.add_parser("report")):
+    for p in (run, v1, judge, extract, sub.add_parser("report")):
         p.add_argument("--results", default=str(RESULTS))
     sub.add_parser("replay").add_argument("run_id")
     args = parser.parse_args()
@@ -182,6 +223,7 @@ def main() -> None:
         "run": cmd_run,
         "v1": cmd_v1,
         "judge": cmd_judge,
+        "extract": cmd_extract,
         "report": cmd_report,
         "replay": cmd_replay,
     }

@@ -1,0 +1,112 @@
+[
+  {
+    "text": "A payments release enabled a fraud check that crashes on a missing field.",
+    "expected": [
+      "payments",
+      false
+    ],
+    "got": [
+      "payments",
+      false
+    ]
+  },
+  {
+    "text": "The orders release removed the receipt cache limit, so orders leaks memory.",
+    "expected": [
+      "orders",
+      false
+    ],
+    "got": [
+      "orders",
+      false
+    ]
+  },
+  {
+    "text": "Turning on the checkout_v2_pricing flag broke the gateway's price calculation.",
+    "expected": [
+      "gateway",
+      false
+    ],
+    "got": [
+      "gateway",
+      false
+    ]
+  },
+  {
+    "text": "The external payment provider slowed down; nothing we deployed caused it.",
+    "expected": [
+      "external",
+      false
+    ],
+    "got": [
+      "external",
+      false
+    ]
+  },
+  {
+    "text": "Exhausted database connections leading to 5xx errors.",
+    "expected": [
+      "database",
+      false
+    ],
+    "got": [
+      "database",
+      false
+    ]
+  },
+  {
+    "text": "Potential database connection issues or a recent deploy causing high error rates.",
+    "expected": [
+      "database",
+      true
+    ],
+    "got": [
+      "database",
+      true
+    ]
+  },
+  {
+    "text": "Potential memory leak in the orders service or DB connections not being released.",
+    "expected": [
+      "orders",
+      true
+    ],
+    "got": [
+      "orders",
+      true
+    ]
+  },
+  {
+    "text": "High error rates on gateway, orders and payments.",
+    "expected": [
+      "unknown",
+      false
+    ],
+    "got": [
+      "unknown",
+      false
+    ]
+  },
+  {
+    "text": "An orders release leaks one Postgres connection per request until the DB is full.",
+    "expected": [
+      "orders",
+      false
+    ],
+    "got": [
+      "orders",
+      false
+    ]
+  },
+  {
+    "text": "Either the gateway timeout is too short or payments is overloaded.",
+    "expected": [
+      "gateway",
+      true
+    ],
+    "got": [
+      "gateway",
+      true
+    ]
+  }
+]

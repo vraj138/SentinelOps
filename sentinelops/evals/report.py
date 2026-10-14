@@ -26,7 +26,7 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
         by_system[r["system"]].append(r)
     summary = {}
     for system, runs in sorted(by_system.items()):
-        scored = [r for r in runs if r["manifested"] and r["status"] != "error"]
+        scored = [r for r in runs if r["manifested"] and r["status"] not in ("error",)]
         row = {
             "runs": str(len(runs)),
             "scored": str(len(scored)),
@@ -35,6 +35,17 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
             ),
             "errors": str(sum(1 for r in runs if r["status"] == "error")),
         }
+        extracted = [r for r in scored if "extracted_correct" in r]
+        if extracted:
+            row["root cause (same metric, all systems)"] = pct(
+                sum(1 for r in extracted if r["extracted_correct"]), len(extracted)
+            )
+            row["root cause, hedging allowed"] = pct(
+                sum(1 for r in extracted if r.get("extracted_correct_lenient")), len(extracted)
+            )
+            row["hedged between causes"] = pct(
+                sum(1 for r in extracted if r["extracted"]["hedged"]), len(extracted)
+            )
         judged = [r for r in scored if r.get("judge")]
         if judged:
             correct = sum(1 for r in judged if r["judge"]["verdict"] == "correct")

@@ -181,47 +181,69 @@ make down                                                   # stop everything
 - [x] Control plane: typed actions, web approval page, fingerprinted approvals, verification,
       auto-rollback
 - [x] Benchmark harness: clean-slate runs, scoring vs answer keys, judge, v1 baseline, replay
-- [x] SentinelOps benchmark: 10 scenarios, 1 run each
-- [ ] v1 baseline comparison and more repeats (needs an OpenAI key)
+- [x] SentinelOps benchmark: 14 scenarios (incl. 4 hard variants), 1 run each
+- [x] v1 baseline comparison (same alerts, same scoring)
+- [ ] More repeats per scenario, and a decoy deploy that lands before the fault
 - [x] Docs: [deployment guide](docs/deployment.md), [limitations](docs/limitations.md)
 - [x] CI: lint and tests on every push
 - [ ] Demo video ([script](docs/demo.md) ready)
 
 ## Results
 
-**SentinelOps, measured on 2026-10-14:** 10 fault scenarios, **1 run each**, Claude Opus 5.5
-(`claude-opus-5-5`, effort `high`). Each run starts from a clean slate (fresh deploy history,
-logs, events and metrics), injects the fault, waits for a real alert, then investigates.
+**Measured on 2026-10-14:** 14 fault scenarios, **1 run each**. SentinelOps runs on Claude Opus 5.5
+(`claude-opus-5-5`, effort `high`). Each run starts from a clean slate (fresh deploy history, logs,
+events and metrics), injects the fault, waits for a real alert, then investigates. v1 gets the
+exact same alert text for each run.
 
-| metric | SentinelOps |
-|---|---|
-| correct root-cause service | 100% (10/10) |
-| correct proposed action | 100% (10/10) |
-| harmful proposal (e.g. rolling back the red-herring deploy) | 0% (0/10) |
-| correct escalation (escalate only when nothing we control caused it) | 100% (10/10) |
-| median time from alert to answer | 33 s |
-| mean cost per incident | $0.10 |
-| mean tool calls / citations per answer | 10.3 / 10.8 |
+| | SentinelOps (v2) | v1, as shipped | v1 + our runbooks |
+|---|---|---|---|
+| **Correct root cause** (right service, one cause) | **100%** (14/14) | 0% (0/14) | 0% (0/14) |
+| Correct root cause, counting hedged answers | 100% (14/14) | 14% (2/14) | 21% (3/14) |
+| Hedged between causes ("X or Y") | 0% | 29% | 86% |
+| Correct proposed fix | 100% (14/14) | - | - |
+| Harmful proposal (e.g. rolling back a red-herring deploy) | 0% (0/14) | - | - |
+| Correct escalation | 100% (14/14) | - | - |
+| Median time from alert to answer | 30 s | 8 s | 7 s |
+| Mean cost per incident | $0.10 | under $0.01 | under $0.01 |
 
-Scenarios: bad deploy (3 variants, one with a red-herring deploy), memory leak, DB connection
-exhaustion, slow external dependency (2, one with a red herring), bad feature flag (2), missing
-secret. Per-run details: [`evals/results/summary.md`](evals/results/summary.md).
+**What v1 does wrong:** with no live evidence (its metrics client import fails silently), it
+answers from its runbook corpus. As shipped it blamed "exhausted database connections" in most
+scenarios, including bad deploys, feature flags and a slow third-party provider, invented
+"metric correlations" with DB connection issues, and suggested `ALTER SYSTEM SET
+max_connections = 1000`. Given our runbooks, it hedges instead ("database issues or a recent
+deploy") without ever naming which deploy or service. v1 can't act, so it has no fix scores.
+
+**How root cause is scored the same way for all systems:** an LLM only *extracts* which service
+each answer blames and whether it hedges; scoring is then the same deterministic rule for every
+system. The extractor had to pass 10 hand-labelled cases first (it passed 10/10), and
+SentinelOps' extracted answers match its structured answers 14/14. A free-form LLM judge was
+tried first and **not used**: it failed its own calibration (18/24, then 21/24 after one rubric
+clarification), disagreeing with my labels on the feature-flag cases. Both attempts are saved in
+`evals/results/`.
+
+Scenarios: bad deploy (4 variants), memory leak (2), DB connection exhaustion (2), slow external
+dependency (2), bad feature flag (2), missing secret (2). Six include a red-herring deploy, and
+four "hard" variants use terse or misleading commit messages ("chore: sync config", a decoy
+titled "Rework retry logic for upstream calls"), so the cause has to come from diffs, metrics
+and timing rather than the commit text. Per-run details: [`evals/results/summary.md`](evals/results/summary.md).
 
 **Read these numbers with their limits:**
-- **10 runs, one per scenario.** That's enough to show it works end to end, not a tight
-  accuracy estimate. More repeats and harder variants are the next step.
+- **14 runs, one per scenario.** That's enough to show the gap clearly, not a tight accuracy
+  estimate. More repeats are the next step.
 - **I wrote the scenarios and the agent.** Answer keys were fixed before any run, and red
   herrings punish shortcuts, but the faults are known to be diagnosable.
-- **Deploy commit messages are descriptive** ("Keep all receipts in memory..."), which makes
-  diagnosis easier than with typical real-world commits.
+- **Red-herring deploys land after symptoms begin**, so the timeline rules them out. A decoy
+  that lands before the fault is a harder test not yet included.
 - **Proposals are scored, not executed.** Executing them, with approval, verification and
   auto-rollback, is shown separately in the control plane's live tests.
-- **v1 baseline: not yet run** (needs an OpenAI key). The comparison table will be added when
-  it is measured, with the same alerts and the same judge for both systems.
+- **v1's LLM code was never published** to the IncidentPilot repo; the baseline runs a snapshot
+  of the local working copy (SHA-256 in `evals/results/v1_snapshot.json`).
 
 ```bash
 make bench-dry                              # free: scripted model, proves the harness
 make bench ARGS="--confirm-spend"           # paid: SentinelOps on every scenario
+uv run python -m sentinelops.evals v1 --confirm-spend        # v1 on the recorded alerts
+uv run python -m sentinelops.evals extract --confirm-spend   # same-metric root-cause scoring
 make report                                 # summary table -> evals/results/summary.md
 ```
 

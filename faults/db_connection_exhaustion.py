@@ -45,3 +45,20 @@ SCENARIOS = [
         ),
     ),
 ]
+
+SCENARIOS.append(
+    Scenario(
+        fault_type=FaultType.DB_CONNECTION_EXHAUSTION,
+        variant="b",
+        description="hard: the connection-leaking orders release is labelled 'perf tuning'",
+        steps=[
+            Deploy(
+                service="orders",
+                changes={"ORDERS_DB_POOL_MODE": "persistent"},
+                message="perf tuning",
+                author="release-bot",
+            )
+        ],
+        ground_truth=SCENARIOS[0].ground_truth,
+    )
+)

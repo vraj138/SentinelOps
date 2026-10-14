@@ -44,3 +44,22 @@ SCENARIOS = [
         ),
     ),
 ]
+
+SCENARIOS.append(
+    Scenario(
+        fault_type=FaultType.MISSING_SECRET,
+        variant="b",
+        description=(
+            "hard: the release that drops PAYMENTS_API_KEY is labelled 'Routine dependency bumps'"
+        ),
+        steps=[
+            Deploy(
+                service="payments",
+                changes={"PAYMENTS_API_KEY": None},
+                message="Routine dependency bumps",
+                author="release-bot",
+            )
+        ],
+        ground_truth=SCENARIOS[0].ground_truth,
+    )
+)

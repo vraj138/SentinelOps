@@ -10,12 +10,16 @@ from faults.scenario import (
 )
 
 
-def _bad_release(rate: str) -> Deploy:
+def _bad_release(
+    rate: str,
+    message: str = "Enable fraud screening on charges",
+    author: str = "payments-team",
+) -> Deploy:
     return Deploy(
         service="payments",
         changes={"PAYMENTS_FRAUD_CHECK_RATE": rate},
-        message="Enable fraud screening on charges",
-        author="payments-team",
+        message=message,
+        author=author,
     )
 
 
@@ -67,6 +71,25 @@ SCENARIOS = [
             Deploy(
                 service="gateway",
                 message="Upgrade HTTP client libraries",
+                author="platform-team",
+                red_herring=True,
+                wait_before_seconds=30,
+            ),
+        ],
+        ground_truth=_ground_truth("about 30%"),
+    ),
+    Scenario(
+        fault_type=FaultType.BAD_DEPLOY,
+        variant="d",
+        description=(
+            "hard: payments release with a terse message ('chore: sync config'), then a gateway "
+            "deploy whose message sounds like the cause"
+        ),
+        steps=[
+            _bad_release("0.3", message="chore: sync config", author="release-bot"),
+            Deploy(
+                service="gateway",
+                message="Rework retry logic for upstream calls",
                 author="platform-team",
                 red_herring=True,
                 wait_before_seconds=30,

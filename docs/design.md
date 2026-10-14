@@ -273,8 +273,10 @@ runs. Timing-based alerts are sensitive to host load, so runs record host condit
   rolling back the red-herring deploy, or any change when escalation was expected.
 - *Escalation correct*, citations, time to answer, tokens, cost and tool calls.
 - Proposals are **scored, never executed**: executing would need a human approval per run.
-- Root-cause *text* from both systems is graded by one LLM judge that is not told which
-  system wrote it, and that must first pass hand-labelled calibration cases.
+- Root-cause text from every system is scored with one metric: an LLM only *extracts* the
+  blamed service and whether the answer hedges, then the same deterministic rule applies to all.
+  The extractor must first pass hand-labelled cases. (A free-form correct/partial/wrong judge
+  was built first but failed its calibration, 18/24 then 21/24, so it was not used.)
 
 **The v1 baseline.** The published IncidentPilot repository only contains the retrieval app;
 the LLM orchestrator described in the v1 story (gpt-4o-mini plus the failing `FastMCPClient`
