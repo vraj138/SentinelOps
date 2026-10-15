@@ -1,8 +1,9 @@
 """The audit log: one JSONL record per LLM call, tool call, policy decision and run event.
 
 The same file is the citation target (tool call ids like "T3"), the audit trail, and the
-recording that replay mode will re-run on Day 5. Each record is written and flushed as it
-happens, so a crash mid-run still leaves everything up to that point on disk.
+recording that replay mode re-runs (`python -m sentinelops.evals replay`). Each record is
+written and flushed as it happens, so a crash mid-run still leaves everything up to that point
+on disk.
 """
 
 import json
