@@ -1,0 +1,76 @@
+{% macro status(value) -%}
+<span class="status"><span class="dot {{ STATUS_TONE.get(value, 'neutral') }}"></span>{{ value }}</span>
+{%- endmacro %}
+
+{% macro state_badge(state) -%}
+<span class="badge {{ STATE_TONE[state] }}">{{ state.value }}</span>
+{%- endmacro %}
+
+{% macro incident_badge(incident) -%}
+{%- set label = state_label(incident) -%}
+<span class="badge {{ label[1] }}">{{ label[0] }}</span>
+{%- endmacro %}
+
+{% macro when(dt) -%}
+<time datetime="{{ dt.isoformat() }}" title="{{ dt.strftime('%Y-%m-%d %H:%M:%S') }} UTC">{{ dt.strftime('%b %d, %H:%M') }} UTC</time>
+{%- endmacro %}
+
+{% macro cost(stats) -%}
+{%- if stats -%}{% if stats.unpriced %}&ge;{% endif %}${{ '%.3f' | format(stats.cost_usd) }}{%- else -%}<span class="faint">-</span>{%- endif -%}
+{%- endmacro %}
+
+{% macro owner(incident, catalog) -%}
+{%- if incident.product -%}
+{%- set p = catalog.product(incident.product) -%}
+<a href="/products/{{ p.id }}">{{ p.name }}</a> <span class="dim">{{ p.team }}</span>
+{%- else -%}
+<span class="faint">unassigned</span>
+{%- endif -%}
+{%- endmacro %}
+
+{% macro routed_by(incident) -%}
+{{ {'alerts': 'likely owner, from alerts', 'investigation': 'root-cause owner, from investigation', 'operator': 'set by operator'}.get(incident.owner_source or '', 'not routed') }}
+{%- endmacro %}
+
+{% macro incident_table(rows, catalog, empty='No incidents.') -%}
+<div class="panel"><div class="panel-body flush">
+{% if rows %}
+<table>
+  <thead><tr>
+    <th>Incident</th><th>Title</th><th>State</th><th>Owner</th>
+    <th>Opened</th><th class="r">Duration</th><th class="r">Agent cost</th>
+  </tr></thead>
+  <tbody>
+  {% for row in rows %}
+  <tr>
+    <td class="nowrap"><a class="mono" href="/incidents/{{ row.incident.id }}">{{ row.incident.id }}</a></td>
+    <td>{{ row.title }}</td>
+    <td>{{ incident_badge(row.incident) }}</td>
+    <td class="nowrap">{{ owner(row.incident, catalog) }}</td>
+    <td class="nowrap dim">{{ when(row.incident.created_at) }}</td>
+    <td class="r num nowrap">{{ row.duration }}</td>
+    <td class="r num">{{ cost(row.stats) }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty">{{ empty }}</div>
+{% endif %}
+</div></div>
+{%- endmacro %}
+
+{% macro chart_panel(panel, services, prom_link=None, small=False) -%}
+<section class="panel" data-panel="{{ panel.id }}" data-services="{{ services | join(',') }}"
+         data-unit="{{ panel.unit }}"{% if panel.optional %} data-optional{% endif %}>
+  <header class="panel-head">
+    <h3 title="{{ panel.description }}">{{ panel.title }}</h3>
+    {% if panel.alert %}<span class="threshold-note">alert {{ panel.alert }}</span>{% endif %}
+    <div class="tools">
+      {% if prom_link %}<a href="{{ prom_link }}" target="_blank" rel="noopener" title="Open this query in Prometheus">Explore ↗</a>{% endif %}
+    </div>
+  </header>
+  <div class="chart{{ ' small' if small }}"><div class="chart-state">Loading…</div></div>
+  <div class="legend"></div>
+</section>
+{%- endmacro %}

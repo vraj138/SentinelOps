@@ -1,8 +1,10 @@
 """The control plane: moves incidents through the state machine and records every step.
 
 OPEN -> INVESTIGATING -> PROPOSED -> APPROVED -> EXECUTING -> VERIFYING -> RESOLVED
-                                                                      \\-> ESCALATED
-Approval exists only here (web page / CLI), never as an agent tool.
+              |                                                       \\-> ESCALATED
+              \\-> SELF_RESOLVED (the alert cleared before the analysis finished)
+Approval exists only here (web page / CLI), never as an agent tool. Investigations are
+read-only, so they may start without a person (see `investigations.py`); actions may not.
 """
 
 import secrets
@@ -16,7 +18,9 @@ from sentinelops.agent.investigator import InvestigationResult
 from sentinelops.catalog import Catalog
 from sentinelops.catalog import load as load_catalog
 from sentinelops.controlplane.actions import ActionBackend, ActionError
+from sentinelops.controlplane.alerts import describe
 from sentinelops.controlplane.models import (
+    REINVESTIGABLE,
     Alert,
     Approval,
     CheckResult,
@@ -24,7 +28,7 @@ from sentinelops.controlplane.models import (
     ProposedAction,
     State,
 )
-from sentinelops.controlplane.store import IncidentStore
+from sentinelops.controlplane.store import IncidentStore, StaleTransition
 from sentinelops.controlplane.verify import Verifier
 
 
@@ -91,16 +95,145 @@ class ControlPlane:
             )
         return {"product": owner.id, "owner_source": source}
 
-    def start_investigation(self, incident_id: str) -> Incident:
-        return self._move(incident_id, State.OPEN, State.INVESTIGATING)
+    def attach_alerts(self, incident_id: str, alerts: list[Alert]) -> Incident:
+        """Add related alerts to an open incident instead of opening another one.
 
-    def record_investigation(self, incident_id: str, result: InvestigationResult) -> Incident:
-        """Attach the agent's result; propose its action, or escalate."""
+        Until the investigation starts, the alert text it will read is updated too.
+        """
+
+        def change(incident: Incident) -> dict:
+            known = {a.key for a in incident.alerts}
+            merged = incident.alerts + [a for a in alerts if a.key not in known]
+            services = [a.service for a in merged if a.service]
+            updates: dict = {
+                "alerts": merged,
+                "impacted_products": routing.impacted(self.catalog, services),
+            }
+            if incident.investigation.status in (None, "queued", "waiting"):
+                updates["alert_context"] = describe(merged)
+                if incident.owner_source in (None, "alerts"):
+                    owner = routing.owner_from_alerts(self.catalog, services)
+                    updates["product"] = owner.id if owner else incident.product
+            return updates
+
+        for _ in range(3):  # the state can move under us; re-read and retry
+            state = self.store.get(incident_id).state
+            try:
+                updated = self.store.update(incident_id, state, change)
+                break
+            except StaleTransition:
+                continue
+        else:
+            raise StaleTransition(f"incident {incident_id} kept changing; alerts not attached")
+        self.audit(incident_id).record(
+            "alerts_attached", alerts=[a.model_dump(mode="json") for a in alerts]
+        )
+        return updated
+
+    def set_investigation(
+        self, incident_id: str, expected: State, event: str, **fields
+    ) -> Incident:
+        """Update the investigation bookkeeping (queued, waiting, ...) without a state change."""
+        updated = self.store.update(
+            incident_id,
+            expected,
+            lambda i: {"investigation": i.investigation.model_copy(update=fields)},
+        )
+        self.audit(incident_id).record(event, **{k: _plain(v) for k, v in fields.items()})
+        return updated
+
+    def reopen_for_investigation(self, incident_id: str, trigger: str = "manual") -> Incident:
+        """Send a proposed, escalated or self-resolved incident back to OPEN, queued for a new
+        investigation. The old proposal is cleared at once, so it can't be approved meanwhile.
+        Refused once an action has been executed: a person handles that incident."""
+        incident = self.store.get(incident_id)
+        if incident.state not in REINVESTIGABLE or incident.inverse is not None:
+            raise StaleTransition(f"incident {incident_id} can't be re-investigated now")
+        info = incident.investigation.model_copy(
+            update={"status": "queued", "trigger": trigger, "note": None, "queued_at": _now()}
+        )
+        self.audit(incident_id).record("reinvestigation_requested", trigger=trigger)
+        return self._move(
+            incident_id,
+            incident.state,
+            State.OPEN,
+            rca=None,
+            proposal=None,
+            action=None,
+            approval=None,
+            escalation_reason=None,
+            investigation=info,
+        )
+
+    def start_investigation(self, incident_id: str, trigger: str = "manual") -> Incident:
+        incident = self.store.get(incident_id)
+        info = incident.investigation.model_copy(
+            update={
+                "status": "running",
+                "trigger": trigger,
+                "note": None,
+                "runs": incident.investigation.runs + 1,
+                "started_at": _now(),
+            }
+        )
+        self.audit(incident_id).record("investigation_started", trigger=trigger, run=info.runs)
+        return self._move(incident_id, State.OPEN, State.INVESTIGATING, investigation=info)
+
+    def record_investigation(
+        self,
+        incident_id: str,
+        result: InvestigationResult,
+        still_firing: bool | None = None,
+    ) -> Incident:
+        """Attach the agent's result; propose its action, or escalate.
+
+        If the incident's alerts stopped firing before the analysis finished (`still_firing` is
+        False), the analysis is kept but nothing is proposed: the incident is SELF_RESOLVED.
+        Unknown (None, e.g. Prometheus down) is never treated as resolved.
+        """
+        incident = self.store.get(incident_id)
+        finished = _now()
+        alert_seen = (finished - incident.created_at).total_seconds()
+        starts = [a.since for a in incident.alerts if a.since]
+        info = incident.investigation.model_copy(
+            update={
+                "status": "done",
+                "finished_at": finished,
+                "alert_to_rca_seconds": round(alert_seen, 1),
+            }
+        )
+        self.audit(incident_id).record(
+            "investigation_finished",
+            trigger=info.trigger,
+            status=result.status,
+            still_firing=still_firing,
+            alert_to_rca_seconds=round(alert_seen, 1),
+            alert_pending_to_rca_seconds=round((finished - min(starts)).total_seconds(), 1)
+            if starts
+            else None,
+            cost_usd=result.totals.get("cost_usd"),
+        )
+        if still_firing is False:
+            owner = (
+                self._owner_updates(incident_id, result.rca.root_cause_service, "investigation")
+                if result.rca
+                else {}
+            )
+            return self._move(
+                incident_id,
+                State.INVESTIGATING,
+                State.SELF_RESOLVED,
+                rca=result.rca,
+                investigation=info,
+                escalation_reason=None,
+                **owner,
+            )
         if result.status != "rca" or result.rca is None:
             return self.escalate(
                 incident_id,
                 State.INVESTIGATING,
                 f"investigation escalated: {result.escalation_reason}",
+                investigation=info,
             )
         rca = result.rca
         owner = self._owner_updates(incident_id, rca.root_cause_service, "investigation")
@@ -111,6 +244,7 @@ class ControlPlane:
                 State.INVESTIGATING,
                 f"agent recommends escalation: {action.reason}",
                 rca=rca,
+                investigation=info,
                 **owner,
             )
         proposal = ProposedAction(
@@ -121,7 +255,9 @@ class ControlPlane:
             reason=action.reason,
             proposed_by="agent",
         )
-        return self.propose(incident_id, proposal, State.INVESTIGATING, rca=rca, **owner)
+        return self.propose(
+            incident_id, proposal, State.INVESTIGATING, rca=rca, investigation=info, **owner
+        )
 
     def propose(
         self, incident_id: str, proposal: ProposedAction, expected: State = State.OPEN, **updates
@@ -223,3 +359,11 @@ class ControlPlane:
         incident = self.store.transition(incident_id, expected, new, **updates)
         self.audit(incident_id).record("state_change", **{"from": expected.value, "to": new.value})
         return incident
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _plain(value):
+    return value.isoformat() if isinstance(value, datetime) else value

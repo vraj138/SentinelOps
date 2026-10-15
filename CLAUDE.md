@@ -28,12 +28,14 @@ Prometheus alerts ─► control plane (FastAPI web UI/API + its own Postgres; i
                               changes (deploy repo + feature flags) · runbooks (keyword search)
 ```
 Incident states: OPEN → INVESTIGATING → PROPOSED → APPROVED → EXECUTING → VERIFYING →
-RESOLVED | ESCALATED. Typed actions: `rollback`, `restart`, `set_flag` (`scale` is out of scope).
+RESOLVED | ESCALATED, plus SELF_RESOLVED (the alert cleared before the analysis finished). Typed actions: `rollback`, `restart`, `set_flag` (`scale` is out of scope).
 The control-plane Postgres is separate from the demo app's Postgres, which faults overload.
 A deploy is a commit to the local deploy repo (`storage/deploy-repo`) plus a container recreate.
 Products, owning teams and service dependencies live in `catalog.toml`; incidents are routed to
-the team owning the root cause. The control plane opens incidents from firing alerts by itself,
-but an investigation (paid) only starts on an explicit click.
+the team owning the root cause. The control plane opens incidents from firing alerts (related
+alerts grouped into one incident) and starts a read-only investigation automatically
+(`AUTO_INVESTIGATE`), within a concurrency limit and a daily spend cap. Approval stays only in
+front of remediation actions.
 
 ## Repo layout
 ```

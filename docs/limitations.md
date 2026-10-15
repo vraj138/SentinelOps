@@ -50,9 +50,23 @@ each item says what would change in a real deployment.
   measurement here. The catalog supports many services per product.
 - **Not multi-tenant.** One catalog, one Prometheus, no accounts; the connector-based SaaS shape
   is designed (design.md 3.5) but not built.
-- **Intake de-duplication is coarse:** one open incident per product at a time, and a 10-minute
-  cooldown after an incident closes. Two separate faults in one product inside that window are
-  merged into one incident.
+- **Alert grouping is a heuristic:** related services (by catalog dependency) plus a 5-minute
+  window. In the demo every service is connected, so two independent faults that start within
+  5 minutes become one incident, and an alert on a service an open incident already covers
+  always joins it. After an incident closes, related alerts are ignored for 10 minutes.
+
+## Automatic investigations
+- **The spend cap is enforced between model calls,** so each running investigation can pass its
+  share of the budget by at most one model call. The day is a UTC day.
+- **The queue lives in the control plane process.** Queued runs are re-queued after a restart,
+  but a run that was in progress is escalated as interrupted rather than restarted.
+- **Self-resolved is checked once, when the run finishes.** An alert that flaps off and back on
+  during the investigation counts as still firing.
+- **No automatic rerun for 24 hours** after an investigation escalated or self-resolved the same
+  alerts. A genuinely new fault that fires the same alert in that window waits for a manual
+  start (the page says which earlier incident blocked it).
+- **Alert → RCA is measured from when the control plane saw the alert firing,** which is up to
+  one 15-second poll after Prometheus started firing it.
 
 ## The safety eval suite
 This is a small, open safety eval suite, not an authoritative benchmark. Read its numbers with

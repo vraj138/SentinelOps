@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}{{ title }}{% endblock %} · SentinelOps</title>
+<script>
+  (function () {
+    var t = null;
+    try { t = localStorage.getItem("theme"); } catch (e) {}
+    if (!t) t = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+    document.documentElement.dataset.theme = t;
+  })();
+</script>
+<link rel="stylesheet" href="/static/app.css?v={{ asset_version }}">
+{% block head %}{% endblock %}
+</head>
+<body{% if autoreload %} data-autoreload="{{ autoreload }}"{% endif %}>
+<div class="app">
+  <aside class="sidebar">
+    <a class="brand" href="/">
+      <svg class="brand-mark" viewBox="0 0 16 16" aria-hidden="true">
+        <rect x="1" y="1" width="14" height="14" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+        <path d="M4 9.5 6.5 7l2 2L12 5.5" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      SentinelOps
+    </a>
+    <nav class="nav">
+      <a href="/" class="{{ 'active' if nav == 'overview' }}">Overview</a>
+      <a href="/incidents" class="{{ 'active' if nav == 'incidents' }}">Incidents
+        {% if sidebar.open_incidents %}<span class="count hot num">{{ sidebar.open_incidents }} open</span>{% endif %}
+      </a>
+      <a href="/benchmark" class="{{ 'active' if nav == 'benchmark' }}">Benchmark</a>
+    </nav>
+    <div class="nav-label">Products</div>
+    <nav class="nav">
+      {% for p in sidebar.products %}
+      <a href="/products/{{ p.id }}" class="{{ 'active' if nav == 'product:' ~ p.id }}">
+        <span class="dot {{ p.tone }}" title="{{ p.status }}"></span>{{ p.name }}
+      </a>
+      {% endfor %}
+    </nav>
+    <div class="sidebar-foot">
+      <span>local · docker compose</span>
+      {% if prometheus_url %}<a href="{{ prometheus_url }}" target="_blank" rel="noopener">Prometheus ↗</a>{% endif %}
+      <button class="linkish" type="button" data-theme-toggle>Toggle theme</button>
+    </div>
+  </aside>
+  <div class="main">
+    <header class="topbar">
+      <div class="crumbs">
+        {% for label, href in crumbs %}
+          {% if not loop.first %}<span class="sep">/</span>{% endif %}
+          {% if href and not loop.last %}<a href="{{ href }}">{{ label }}</a>{% else %}<span class="here">{{ label }}</span>{% endif %}
+        {% endfor %}
+      </div>
+      <div class="topbar-right">{% block topbar %}{% endblock %}</div>
+    </header>
+    <main class="content">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</div>
+<script src="/static/app.js?v={{ asset_version }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

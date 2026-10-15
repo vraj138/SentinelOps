@@ -67,6 +67,28 @@ class Catalog(BaseModel):
         """Services the typed remediation actions may target (not shared infrastructure)."""
         return [s for p in self.products if not p.infrastructure for s in p.services]
 
+    def dependency_group(self, service: str) -> frozenset[str]:
+        """Every service connected to `service` through dependencies, in either direction.
+
+        Alerts on services in one group can be symptoms of one failure, so the alert intake
+        groups them into one incident. A service the catalog doesn't know is its own group.
+        """
+        links: dict[str, set[str]] = {s: set() for s in self.services}
+        for product in self.products:
+            for s in product.services:
+                for other in [*product.services, *product.depends_on]:
+                    if other != s and other in links:
+                        links[s].add(other)
+                        links[other].add(s)
+        if service not in links:
+            return frozenset({service})
+        group, frontier = {service}, [service]
+        while frontier:
+            for neighbour in links[frontier.pop()] - group:
+                group.add(neighbour)
+                frontier.append(neighbour)
+        return frozenset(group)
+
     def downstream_first(self) -> list[str]:
         """Services ordered so each comes before the services that depend on it."""
         ordered: list[str] = []

@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status, state_badge, incident_badge, when, owner, incident_table %}
+{% block topbar %}<span class="faint">auto-refresh 15s · updated <time data-clock datetime="{{ now.isoformat() }}">{{ now.strftime('%H:%M:%S') }} UTC</time></span>{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Overview</h1>
+    <div class="sub"><span>{{ products | length }} products</span><span>{{ service_count }} services</span></div>
+  </div>
+</div>
+
+<div class="stats">
+  <div class="stat">
+    <div class="label">Products healthy</div>
+    <div class="value num">{{ stats.healthy }}<small>/ {{ stats.total }}</small></div>
+  </div>
+  <div class="stat">
+    <div class="label">Open incidents</div>
+    <div class="value num {{ 'warn' if stats.open }}">{{ stats.open }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">Awaiting approval</div>
+    <div class="value num {{ 'warn' if stats.awaiting }}">{{ stats.awaiting }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">Firing alerts</div>
+    <div class="value num {{ 'bad' if stats.firing }}">{{ stats.firing if stats.firing is not none else '-' }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">Median time to resolve</div>
+    <div class="value num">{{ stats.mttr or '-' }}</div>
+    <div class="foot">{{ stats.resolved }} resolved, {{ stats.escalated }} escalated, {{ stats.self_resolved }} self-resolved</div>
+  </div>
+  <div class="stat">
+    <div class="label" title="Automatic runs only: from the moment the alert was seen firing to the finished analysis">Alert → RCA, median</div>
+    <div class="value num">{{ stats.alert_to_rca or '-' }}</div>
+    <div class="foot">{{ stats.alert_to_rca_runs }} automatic investigation{{ 's' if stats.alert_to_rca_runs != 1 }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">Auto-investigation</div>
+    {% if queue %}
+    <div class="value {{ 'ok' if queue.auto else 'dim' }}">{{ 'On' if queue.auto else 'Off' }}</div>
+    <div class="foot">${{ '%.2f' | format(queue.spent_today_usd) }} of ${{ '%.2f' | format(queue.budget_usd) }} today · {{ queue.running }} running, {{ queue.queued }} queued</div>
+    {% else %}
+    <div class="value dim">Off</div>
+    <div class="foot">no model credentials configured</div>
+    {% endif %}
+  </div>
+</div>
+
+{% if attention %}
+<div class="section-title">Needs attention <span class="dim">{{ attention | length }}</span></div>
+{{ incident_table(attention, catalog) }}
+{% endif %}
+
+<div class="section-title">Products</div>
+<div class="panel"><div class="panel-body flush">
+<table>
+  <thead><tr>
+    <th>Status</th><th>Product</th><th>Owner</th><th>Services</th>
+    <th class="r">Req/s</th><th class="r">5xx</th><th class="r">p95</th><th>Traffic, 1h</th>
+    <th class="r">Open</th><th>Last incident</th>
+  </tr></thead>
+  <tbody>
+  {% for row in products %}
+  <tr>
+    <td>{{ status(row.overall) }}</td>
+    <td class="nowrap"><a href="/products/{{ row.product.id }}">{{ row.product.name }}</a>
+      {% if row.counts.impacting %}<div class="warn small">impacted by {{ row.counts.impacting }} incident{{ 's' if row.counts.impacting > 1 }} owned elsewhere</div>{% endif %}
+    </td>
+    <td class="dim nowrap">{{ row.product.team }}</td>
+    <td class="nowrap">
+      {% for s in row.services %}
+        <span class="status mono" title="{{ s.status }}{{ ': ' ~ s.alerts | join(', ') ~ ' firing' if s.get('alerts') }}{{ ' (' ~ s.detail ~ ')' if s.get('detail') }}"><span class="dot {{ STATUS_TONE.get(s.status, 'neutral') }}"></span>{{ s.service }}</span>{{ ' ' if not loop.last }}
+      {% endfor %}
+      {% if row.product.infrastructure %}<span class="faint small">container check</span>{% endif %}
+    </td>
+    <td class="r num">{{ row.rps }}</td>
+    <td class="r num {{ 'bad' if row.errors_hot }}">{{ row.errors }}</td>
+    <td class="r num {{ 'warn' if row.p95_hot }}">{{ row.p95 }}</td>
+    <td>{% if row.spark_services %}<div class="spark" data-spark data-services="{{ row.spark_services | join(',') }}"></div>{% else %}<span class="faint">no exporter</span>{% endif %}</td>
+    <td class="r num">{{ row.counts.open }}</td>
+    <td class="nowrap">{% if row.last %}<a class="mono" href="/incidents/{{ row.last.id }}">{{ row.last.id }}</a> {{ incident_badge(row.last) }}{% else %}<span class="faint">none</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div></div>
+
+<div class="section-title">Firing alerts <span class="dim">from Prometheus</span></div>
+<div class="panel"><div class="panel-body flush">
+{% if alerts_error %}
+  <div class="empty bad">Could not read alerts: {{ alerts_error }}</div>
+{% elif alerts %}
+<table>
+  <thead><tr><th>Alert</th><th>Service</th><th>Severity</th><th>Active since</th><th>Summary</th></tr></thead>
+  <tbody>
+  {% for a in alerts %}
+  <tr>
+    <td class="mono">{{ a.name }}</td>
+    <td class="mono">{{ a.service }}</td>
+    <td><span class="badge {{ 'bad' if a.severity == 'critical' else 'warn' }}">{{ a.severity }}</span></td>
+    <td class="dim nowrap">{% if a.since %}{{ when(a.since) }}{% endif %}</td>
+    <td>{{ a.summary }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+  <div class="empty">No alerts firing.</div>
+{% endif %}
+</div></div>
+
+{% if unassigned %}
+<p class="faint">{{ unassigned }} earlier test incident{{ 's' if unassigned > 1 }} predate the service catalog and appear under <a href="/incidents">Incidents</a> as unassigned.</p>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script src="/static/vendor/uplot/uPlot.iife.min.js?v={{ asset_version }}"></script>
+<script src="/static/charts.js?v={{ asset_version }}"></script>
+{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/vendor/uplot/uPlot.min.css?v={{ asset_version }}">{% endblock %}

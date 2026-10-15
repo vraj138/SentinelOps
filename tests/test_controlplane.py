@@ -638,32 +638,6 @@ def test_incident_list_filters_by_product(tmp_path: Path, stack) -> None:
     assert client.get("/products/nope").status_code == 404
 
 
-def test_investigate_button_needs_token_and_credentials(tmp_path: Path, stack) -> None:
-    cp = plane(tmp_path, stack)
-    incident = cp.open("ctx", [Alert(name="HighErrorRate", service="payments")])
-    started: list[str] = []
-    client = TestClient(create_app(cp, results_path=tmp_path / "x", investigate=started.append))
-
-    assert "Investigate with the agent" in client.get(f"/incidents/{incident.id}").text
-    forged = client.post(f"/incidents/{incident.id}/investigate", data={"token": "guess"})
-    assert forged.status_code == 409 and started == []
-
-    client.post(f"/incidents/{incident.id}/investigate", data={"token": incident.investigate_token})
-    assert started == [incident.id]
-    assert cp.store.get(incident.id).state == State.INVESTIGATING
-    again = client.post(
-        f"/incidents/{incident.id}/investigate", data={"token": incident.investigate_token}
-    )
-    assert again.status_code == 409 and started == [incident.id]
-
-    no_key = TestClient(create_app(cp, results_path=tmp_path / "x", investigate=None))
-    other = cp.open("ctx", [Alert(name="HighErrorRate", service="orders")])
-    resp = no_key.post(
-        f"/incidents/{other.id}/investigate", data={"token": other.investigate_token}
-    )
-    assert resp.status_code == 409
-
-
 def test_intake_opens_once_and_respects_cooldown(tmp_path: Path, stack) -> None:
     from datetime import timedelta
 
@@ -675,13 +649,13 @@ def test_intake_opens_once_and_respects_cooldown(tmp_path: Path, stack) -> None:
     intake = AlertIntake(cp, lambda: ("ctx", alerts), now=lambda: clock[0])
 
     first = intake.tick()
-    assert first is not None and intake.tick() is None  # still open: no duplicate
+    assert len(first) == 1 and intake.tick() == []  # still open: no duplicate
 
-    cp.escalate(first, State.OPEN, "handled")
-    assert intake.tick() is None  # just closed: within cooldown
+    cp.escalate(first[0], State.OPEN, "handled")
+    assert intake.tick() == []  # just closed: within cooldown
     clock[0] += timedelta(minutes=11)
-    assert intake.tick() is not None  # alerts still firing long after: new incident
-    assert AlertIntake(cp, lambda: ("ctx", [])).tick() is None  # nothing firing
+    assert len(intake.tick()) == 1  # alerts still firing long after: new incident
+    assert AlertIntake(cp, lambda: ("ctx", [])).tick() == []  # nothing firing
 
 
 def test_old_incidents_without_routing_fields_still_load(tmp_path: Path, stack) -> None:

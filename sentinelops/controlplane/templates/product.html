@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status, state_badge, when, incident_table, chart_panel %}
+{% block head %}<link rel="stylesheet" href="/static/vendor/uplot/uPlot.min.css?v={{ asset_version }}">{% endblock %}
+{% block topbar %}
+{% if panels %}
+<span class="faint">Range</span>
+<div class="segmented" role="group" aria-label="Time range">
+  {% for key in ranges %}<a href="?range={{ key }}&refresh={{ refresh }}" class="{{ 'on' if key == range_key }}">{{ key }}</a>{% endfor %}
+</div>
+<span class="faint gap-left">Refresh</span>
+<div class="segmented" role="group" aria-label="Auto refresh">
+  {% for key, label in refresh_options %}<a href="?range={{ range_key }}&refresh={{ key }}" class="{{ 'on' if key == refresh }}">{{ label }}</a>{% endfor %}
+</div>
+{% endif %}
+{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ product.name }}</h1>
+    <div class="sub">
+      {{ status(overall) }}
+      <span>{{ product.team }}</span>
+      <span>services <span class="mono">{{ product.services | join(', ') }}</span></span>
+      {% if product.depends_on %}<span>calls <span class="mono">{{ product.depends_on | join(', ') }}</span></span>{% endif %}
+      {% if product.external_dependencies %}<span>external: {{ product.external_dependencies | join(', ') }}</span>{% endif %}
+    </div>
+  </div>
+</div>
+
+{% if panels %}
+<div class="stats" data-stats>
+  <div class="stat"><div class="label">Request rate</div><div class="value num" data-stat="requests">-</div></div>
+  <div class="stat"><div class="label">5xx ratio</div><div class="value num" data-stat="errors">-</div><div class="foot">alert above 5%</div></div>
+  <div class="stat"><div class="label">p95 latency</div><div class="value num" data-stat="latency">-</div><div class="foot">alert above 1 s</div></div>
+  <div class="stat"><div class="label">Memory (max)</div><div class="value num" data-stat="memory">-</div><div class="foot">alert above 100 MiB</div></div>
+  <div class="stat"><div class="label">Open incidents</div><div class="value num {{ 'warn' if counts.open }}">{{ counts.open }}</div><div class="foot">{{ counts.resolved }} resolved, {{ counts.escalated }} escalated</div></div>
+</div>
+
+{% if product_alerts %}
+<div class="callout bad">
+  <h3>Firing now</h3>
+  {% for a in product_alerts %}<p><span class="mono">{{ a.name }}</span> on <span class="mono">{{ a.service }}</span> · {{ a.summary }}</p>{% endfor %}
+</div>
+{% endif %}
+
+<div class="dash" data-dashboard data-range="{{ range_key }}" data-refresh="{{ refresh }}"
+     data-colors="{{ colors | tojson | forceescape }}" data-markers="{{ markers | tojson | forceescape }}">
+  {% for panel in panels %}{{ chart_panel(panel, metric_services, prom_links.get(panel.id)) }}{% endfor %}
+</div>
+<p class="faint">Dashed lines are the alert thresholds from <span class="mono">infra/prometheus/alerts.yml</span>. Vertical markers are incidents opened in this range.</p>
+{% else %}
+<div class="panel">
+  <header class="panel-head"><h3>Health</h3><span class="meta">from the container health check</span></header>
+  <div class="panel-body">
+    <p class="dim first">Prometheus doesn't scrape {{ product.services | join(', ') }} in this stack (no exporter), so there are no time series to chart. Status comes from Docker's view of the container and its health check.</p>
+    <table>
+      <thead><tr><th>Service</th><th>Status</th><th>Container</th><th>Started</th><th class="r">Restarts</th></tr></thead>
+      <tbody>
+      {% for s in services %}
+      <tr>
+        <td class="mono">{{ s.service }}</td>
+        <td>{{ status(s.status) }}</td>
+        <td class="dim">{{ s.get('detail', '-') }}</td>
+        <td class="dim mono">{{ (s.container.get('started_at') or '-')[:19] if s.container else '-' }}</td>
+        <td class="r num">{{ s.container.get('restart_count', '-') if s.container else '-' }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{% if panels %}
+<div class="section-title">Services <span class="dim">last minute, as of page load</span></div>
+<div class="panel"><div class="panel-body flush">
+<table>
+  <thead><tr><th>Service</th><th>Status</th><th class="r">Req/s</th><th class="r">5xx</th><th class="r">p95</th></tr></thead>
+  <tbody>
+  {% for s in services %}
+  <tr>
+    <td class="mono"><span class="status"><span class="swatch-dot" style="--c: {{ colors.get(s.service, '#888') }}"></span>{{ s.service }}</span></td>
+    <td>{{ status(s.status) }}</td>
+    <td class="r num">{{ fmt_rps(s.get('rps')) }}</td>
+    <td class="r num">{{ pct(s.get('errors')) }}</td>
+    <td class="r num">{{ secs(s.get('p95')) }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div></div>
+{% endif %}
+
+<div class="section-title">Incidents owned by {{ product.team }} <span class="dim">{{ owned | length }}</span></div>
+{{ incident_table(owned, catalog, 'No incidents owned by this team.') }}
+
+<div class="section-title">Incidents elsewhere that impacted {{ product.name }} <span class="dim">{{ impacting | length }}</span></div>
+{{ incident_table(impacting, catalog, 'None.') }}
+{% endblock %}
+{% block scripts %}
+{% if panels %}
+<script src="/static/vendor/uplot/uPlot.iife.min.js?v={{ asset_version }}"></script>
+<script src="/static/charts.js?v={{ asset_version }}"></script>
+{% endif %}
+{% endblock %}

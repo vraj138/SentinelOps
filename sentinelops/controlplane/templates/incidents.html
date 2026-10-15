@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% from "_macros.html" import incident_table %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Incidents</h1>
+    <div class="sub"><span class="num">{{ rows | length }} shown</span><span>opened from firing alerts · the agent runs on demand</span></div>
+  </div>
+  <form method="get" class="actions inline-form">
+    <select name="product" aria-label="Product">
+      <option value="">All products</option>
+      {% for p in catalog.products %}<option value="{{ p.id }}"{{ ' selected' if p.id == product }}>{{ p.name }}</option>{% endfor %}
+    </select>
+    <select name="state" aria-label="State">
+      <option value="">All states</option>
+      {% for s in states %}<option value="{{ s.value }}"{{ ' selected' if s.value == state }}>{{ s.value.title() }}</option>{% endfor %}
+    </select>
+    <button class="btn">Filter</button>
+    {% if product or state %}<a class="btn" href="/incidents">Clear</a>{% endif %}
+  </form>
+</div>
+{{ incident_table(rows, catalog, 'No incidents match these filters.') }}
+{% endblock %}

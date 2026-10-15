@@ -92,13 +92,15 @@ reproducible.
 
 ```
 OPEN → INVESTIGATING → PROPOSED → APPROVED → EXECUTING → VERIFYING → RESOLVED
-                 │          │          (rejected)            │
-                 └──────────┴──────────────► ESCALATED ◄─────┘ (verification failed → rollback)
+  ▲              │ │        │          (rejected)            │
+  │              │ └────────┴──────────► ESCALATED ◄─────────┘ (verification failed → rollback)
+  │              └──► SELF_RESOLVED (alert cleared before the analysis finished)
+  └── re-investigate (by hand) from PROPOSED, SELF_RESOLVED, or ESCALATED if nothing was executed
 ```
 
 | State | Entered when | What may happen |
 |---|---|---|
-| OPEN | An alert arrives and is not part of an open incident | Nothing; it is queued |
+| OPEN | An alert arrives and is not part of an open incident | Its investigation is queued (or waits for a manual start: auto off, budget used up, or an unfixed repeat) |
 | INVESTIGATING | The agent picks it up | Read-only tool calls only |
 | PROPOSED | The agent returns an RCA and a proposed action | A human reviews the proposal |
 | APPROVED | A human approves; the approval is recorded | Nothing runs yet |
@@ -106,12 +108,14 @@ OPEN → INVESTIGATING → PROPOSED → APPROVED → EXECUTING → VERIFYING →
 | VERIFYING | The action finished | Health checks only |
 | RESOLVED | Verification passed | A report is written |
 | ESCALATED | Budget exhausted, low confidence, rejection, or failed verification after rollback | A report is written with everything gathered so far |
+| SELF_RESOLVED | The incident's alerts stopped firing before the investigation finished | The analysis is kept; nothing is proposed |
 
 State transitions are enforced in the control plane, not by the model. The model can only *ask*
 for the next step; the state machine decides whether that step is allowed.
 
-**Alert intake:** incidents are opened from the firing Prometheus alerts by `make investigate`
-(agent) or the incidents CLI (operator). The Alertmanager webhook was cut for time.
+**Alert intake:** incidents are opened from firing Prometheus alerts by the control plane's
+poller (see 3.4), `make investigate` (agent) or the incidents CLI (operator). The Alertmanager
+webhook was cut for time.
 
 ### 3.3 Control plane and remediation (built)
 
@@ -152,14 +156,61 @@ deploy was refused without touching anything.
   product owning the diagnosed root-cause service (`external` maps to the product that owns
   that dependency); the re-route is written to the audit log. Products whose services alerted
   but aren't the owner are listed as impacted.
-- **Alert intake** polls Prometheus every 15 s and opens incidents for firing alerts, skipping
-  products that already have an open incident or one closed in the last 10 minutes (alerts
-  linger after a fix). Polling instead of an Alertmanager webhook keeps the unauthenticated
-  control plane on localhost and needs no extra container. It never starts an investigation.
-- **Investigate** is an explicit, paid click, guarded like approval (a per-incident token in
-  the form) and serialized by the OPEN -> INVESTIGATING compare-and-set.
-- **Measured:** routing by the alerting service pages the wrong team in 3 of 14 benchmark
-  incidents; routing by SentinelOps' diagnosis pages the right team in 14 of 14.
+- **Alert intake** polls Prometheus every 15 s. Polling instead of an Alertmanager webhook
+  keeps the unauthenticated control plane on localhost and needs no extra container. Alerts are
+  grouped so one failure becomes one incident (`sentinelops/controlplane/intake.py`):
+  - an alert already part of an open incident is ignored;
+  - an alert on a related service (connected through the catalog's dependencies, in either
+    direction) joins an open incident if it started within `INCIDENT_GROUP_WINDOW_MINUTES` (5)
+    of that incident's first alert, or if the incident already covers that service;
+  - an alert related to an incident closed in the last 10 minutes is ignored (alerts linger
+    after a fix);
+  - the rest are grouped the same way among themselves, one new incident per group.
+  Alerts that join an incident before its investigation starts are added to the alert text the
+  agent reads.
+- **Automatic investigation** (`sentinelops/controlplane/investigations.py`). Investigations are
+  read-only, so they start without a person; approval stays in front of actions only.
+  - *Queue:* a pool of `INVESTIGATION_CONCURRENCY` (2) workers; more wait. Status on the
+    incident: queued, running, done, waiting (with the reason) or failed.
+  - *No duplicates:* an incident that has been queued, run or finished is never started again
+    automatically. A person can re-investigate from PROPOSED, SELF_RESOLVED, or ESCALATED if no
+    action was executed. Re-investigating moves the incident back to OPEN in the same request and
+    clears the old proposal, so it can't be approved while the new run waits. A queued run whose
+    incident has moved on (someone escalated it by hand) is skipped, not treated as a failure.
+  - *Daily budget:* `AUTO_INVESTIGATE_DAILY_BUDGET_USD` ($2) for automatic runs, kept in a
+    JSON-lines spend ledger so it survives restarts. Each automatic run reserves
+    min(`AGENT_MAX_COST_USD`, budget / concurrency, what is left) and runs with that as its cost
+    cap, which the agent enforces between model calls. In-flight runs therefore can't push the
+    day past the budget by more than one model call each. Cost is read from the audit log, so a
+    run that crashes is still counted. When the budget is used up, incidents are opened anyway
+    and wait for a manual start, and the page says why. Manual runs aren't capped by it.
+  - *No paid loops:* alerts that an investigation in the last `AUTO_INVESTIGATE_REPEAT_HOURS`
+    (24) escalated or self-resolved are not re-investigated automatically: an unfixed alert that
+    keeps reopening would otherwise buy a new investigation every 10 minutes.
+  - *Self-resolved:* when a run finishes, the control plane asks Prometheus whether any of the
+    incident's alerts still fire. If none do, the incident is SELF_RESOLVED and nothing is
+    proposed. If Prometheus can't be reached, the answer is unknown and the proposal stands.
+  - *Restarts:* queued runs are re-queued; a run that was cut off is escalated ("interrupted"),
+    not silently re-run, because that would spend money nobody asked for twice.
+  - *Audit:* `investigation_queued`, `investigation_started` and `investigation_finished` record
+    the trigger (auto or manual). *Alert → RCA* is measured from the moment the control plane saw
+    the alert firing (incident creation, at most one 15 s poll after it fired) to the finished
+    analysis; the audit also records the time from Prometheus' `activeAt` (when the alert went
+    pending, before its `for:` duration). The overview shows the median for automatic runs only,
+    since manual runs include the time before someone clicked.
+  - *Storage:* field updates and transitions read, change and write each incident under a row
+    lock (`SELECT ... FOR UPDATE`), so the intake attaching alerts can't overwrite a concurrent
+    state change.
+- **Measured:** routing by the alerting service pages the wrong team in 6 of 17 benchmark
+  incidents; routing by SentinelOps' diagnosis pages the right team in 17 of 17.
+- **Web UI.** Server-rendered Jinja templates with autoescaping (no `|safe` anywhere), one
+  stylesheet, no build step, no CDN at runtime. Charts use uPlot, vendored with its license and
+  checksum (`sentinelops/controlplane/static/vendor/uplot/`). The browser never sends PromQL:
+  `/api/panels/<id>` runs a fixed query for catalog services only, caps a request at 24 hours
+  and about 300 points, and returns 503 with the reason when Prometheus fails, so a chart shows
+  "Query failed", never an empty line. Threshold lines use the alert rules' own expressions.
+  Health is cached for 5 seconds; only the overview reloads itself (every 15 s, and only while
+  the tab is visible), and a busy incident polls its JSON and reloads when its state changes.
 
 ### 3.5 From fleet view to SaaS (designed, not built)
 
@@ -181,7 +232,7 @@ access. Safety comes from structure that the model cannot bypass.
 | Read-only diagnostics | Investigation changing production | The diagnostic MCP servers expose only read operations. Write paths are not in that code at all. |
 | Typed actions only | Arbitrary or destructive commands | Actions are Pydantic models (`rollback`, `restart`, `set_flag`) with validated arguments. There is no shell tool and never `shell=True`. |
 | Policy gate | Calling the right tool at the wrong time, or with unsafe arguments | Every tool call is checked against the incident state and argument limits (for example, scaling within set bounds) before it runs. |
-| Human approval | The agent acting on a wrong diagnosis | The approver, time, and a hash of the exact action payload are recorded. Execution refuses if the payload differs from what was approved. |
+| Human approval | The agent acting on a wrong diagnosis | The approver, time, and a hash of the exact action payload are recorded. Execution refuses if the payload differs from what was approved. Investigations start automatically because they are read-only; nothing that changes the system does. |
 | Dry run | Surprises at execution time | Each action describes what it will change before approval. |
 | Verification and auto-rollback | A fix that doesn't work or makes things worse | Each action defines a PromQL health check. If it fails, the action's inverse runs and the incident escalates. |
 | Audit log | Untraceable decisions | Every LLM call and tool call is recorded with inputs, outputs, timing, tokens and cost. |

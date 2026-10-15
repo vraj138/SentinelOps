@@ -1,7 +1,11 @@
 """Incident storage. Every state change is a compare-and-set: it only happens if the incident
 is still in the expected state, so an approval can't be executed twice and two workers can't
-race each other through the state machine."""
+race each other through the state machine. Field updates that don't change the state (attaching
+alerts, investigation bookkeeping) are compare-and-set on the state too, and both run under a
+row lock, so concurrent writers never overwrite each other's changes."""
 
+import threading
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
@@ -21,6 +25,9 @@ class IncidentStore(Protocol):
     def list(self, limit: int = 50) -> list[Incident]: ...
     def transition(
         self, incident_id: str, expected: State, new: State, **updates: Any
+    ) -> Incident: ...
+    def update(
+        self, incident_id: str, expected: State, change: Callable[[Incident], dict[str, Any]]
     ) -> Incident: ...
 
 
@@ -46,14 +53,25 @@ def apply_transition(
     )
 
 
+def apply_update(
+    incident: Incident, expected: State, change: Callable[[Incident], dict[str, Any]]
+) -> Incident:
+    """Apply `change(incident)` (a dict of field updates) if the incident is in `expected`."""
+    if incident.state != expected:
+        raise StaleTransition(f"incident {incident.id} is {incident.state}, expected {expected}")
+    return incident.model_copy(update={**change(incident), "updated_at": datetime.now(UTC)})
+
+
 class InMemoryStore:
     """For tests."""
 
     def __init__(self) -> None:
         self.incidents: dict[str, Incident] = {}
+        self.lock = threading.Lock()
 
     def create(self, incident: Incident) -> Incident:
-        self.incidents[incident.id] = incident
+        with self.lock:
+            self.incidents[incident.id] = incident
         return incident
 
     def get(self, incident_id: str) -> Incident:
@@ -65,8 +83,17 @@ class InMemoryStore:
         return sorted(self.incidents.values(), key=lambda i: i.created_at, reverse=True)[:limit]
 
     def transition(self, incident_id: str, expected: State, new: State, **updates: Any) -> Incident:
-        updated = apply_transition(self.get(incident_id), expected, new, updates)
-        self.incidents[incident_id] = updated
+        with self.lock:
+            updated = apply_transition(self.get(incident_id), expected, new, updates)
+            self.incidents[incident_id] = updated
+        return updated
+
+    def update(
+        self, incident_id: str, expected: State, change: Callable[[Incident], dict[str, Any]]
+    ) -> Incident:
+        with self.lock:
+            updated = apply_update(self.get(incident_id), expected, change)
+            self.incidents[incident_id] = updated
         return updated
 
 
@@ -124,19 +151,33 @@ class PostgresStore:
         return [Incident.model_validate(r[0]) for r in rows]
 
     def transition(self, incident_id: str, expected: State, new: State, **updates: Any) -> Incident:
-        updated = apply_transition(self.get(incident_id), expected, new, updates)
-        with self._connect() as conn:
+        return self._locked_write(
+            incident_id, lambda current: apply_transition(current, expected, new, updates)
+        )
+
+    def update(
+        self, incident_id: str, expected: State, change: Callable[[Incident], dict[str, Any]]
+    ) -> Incident:
+        return self._locked_write(
+            incident_id, lambda current: apply_update(current, expected, change)
+        )
+
+    def _locked_write(self, incident_id: str, apply: Callable[[Incident], Incident]) -> Incident:
+        """Read, change and write one incident in a single transaction holding its row lock."""
+        with self._connect() as conn, conn.transaction():
             row = conn.execute(
-                "UPDATE incidents SET state = %s, updated_at = %s, data = %s "
-                "WHERE id = %s AND state = %s RETURNING id",
+                "SELECT data FROM incidents WHERE id = %s FOR UPDATE", (incident_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"no incident {incident_id!r}")
+            updated = apply(Incident.model_validate(row[0]))
+            conn.execute(
+                "UPDATE incidents SET state = %s, updated_at = %s, data = %s WHERE id = %s",
                 (
-                    new,
+                    updated.state,
                     updated.updated_at,
                     Jsonb(updated.model_dump(mode="json")),
                     incident_id,
-                    expected,
                 ),
-            ).fetchone()
-        if row is None:
-            raise StaleTransition(f"incident {incident_id} changed state concurrently")
+            )
         return updated

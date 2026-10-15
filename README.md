@@ -74,6 +74,7 @@ Each incident moves through a strict sequence of states:
 
 ```
 OPEN → INVESTIGATING → PROPOSED → APPROVED → EXECUTING → VERIFYING → RESOLVED | ESCALATED
+              └─► SELF_RESOLVED (the alert cleared before the analysis finished; nothing proposed)
 ```
 
 ## Fleet view: many products, the right team paged
@@ -83,16 +84,34 @@ where the cause is, so the team that gets paged is often the wrong one. Sentinel
 **service catalog** (`catalog.toml`: products, owning teams, services, dependencies) and routes
 each incident to the team that owns the **root cause**:
 
-- When alerts fire, the control plane opens an incident on its own (free; no agent runs) and
-  pages the *likely* owner, labelled as a guess from the alerts.
-- **Investigate** runs the agent (a button on the incident, about $0.10). It re-routes the
-  incident to the owner of the diagnosed cause and tells the other products why their alerts
-  are symptoms, not their fault.
-- The **fleet page** shows every product's live health (from Prometheus), its open incidents,
-  incidents awaiting approval, time to resolve, and incidents other teams caused that impacted it.
+- When alerts fire, the control plane opens an incident on its own and pages the *likely*
+  owner, labelled as a guess from the alerts. Related alerts (services connected in the
+  catalog, started within 5 minutes) become **one incident**, so one failure buys one
+  investigation, not three.
+- The **investigation starts automatically**: it is read-only, so it doesn't wait for a person.
+  Only remediation does. It re-routes the incident to the owner of the diagnosed cause and
+  tells the other products why their alerts are symptoms, not their fault. Typically
+  $0.10–0.30 per investigation.
+- Guardrails on automatic runs: at most 2 at once (the rest queue), a daily budget
+  (`AUTO_INVESTIGATE_DAILY_BUDGET_USD`, default $2; after that incidents wait for a manual
+  start and say why), never a second automatic run for the same incident, no automatic rerun
+  for alerts an investigation already couldn't fix in the last 24 hours, and
+  `AUTO_INVESTIGATE=false` turns it off. If the alert clears before the analysis finishes, the
+  incident is **self-resolved** and nothing is proposed. **Re-investigate** reruns it by hand.
+- Each investigation records whether it started automatically or manually, and the time from
+  the alert being seen firing to the finished root-cause analysis (median on the overview).
+- The **overview** shows every product's live health, firing alerts, open incidents, incidents
+  awaiting approval and time to resolve. A product's status counts its firing alerts, so it
+  never says healthy while one of its alerts is firing.
+- Each product has a **Prometheus-style dashboard**: request rate, 5xx ratio, p95 latency,
+  memory, restarts and DB connections over a chosen range, with the alert thresholds drawn as
+  dashed lines and incidents marked on the time axis. Each panel links to the same query in
+  Prometheus. The incident page charts the alerting services around the incident window.
 
-The demo stack is split into three team-owned products: Edge Gateway (`edge-team`), Orders
-(`commerce-team`), Payments (`payments-team`, which also owns the external payment provider).
+The demo stack is split into four team-owned products: Edge Gateway (`edge-team`), Orders
+(`commerce-team`), Payments (`payments-team`, which also owns the external payment provider)
+and Data Platform (`data-platform-team`, the shared Postgres; it has no exporter, so its status
+comes from the container health check).
 
 ## Safety model
 
@@ -102,6 +121,7 @@ These are design rules, enforced in code:
 - **No free-form commands.** The model can only choose from typed actions defined in code
   (`rollback`, `restart`, `set_flag`). There is no shell access and never `shell=True`.
 - **A human approves every action**, and the approval is recorded before anything runs.
+  Investigations start on their own because they can't change anything; actions never do.
 - **Every action is verified afterwards.** If verification fails, the system rolls back and
   escalates automatically.
 - **Everything is audited.** Every LLM call and tool call is logged with timing, tokens and cost.
@@ -203,7 +223,9 @@ make down                                                   # stop everything
 - [x] Benchmark harness: clean-slate runs, scoring vs answer keys, judge, v1 baseline, replay
 - [x] First benchmark: 14 scenarios (incl. 4 hard variants), 1 run each
 - [x] v1 baseline comparison (same alerts, same scoring)
-- [x] Fleet view: service catalog, team routing, alert intake, Investigate button
+- [x] Fleet view: service catalog, team routing, alert intake
+- [x] Automatic investigations: alert grouping, queue with a concurrency limit, daily spend cap,
+      self-resolved incidents, alert-to-RCA time
 - [x] Safety eval suite: a rollback trap, a decoy deploy before the fault, a DB outage owned by
       a team that never gets alerted, and a naive agent baseline (same model, no safety layer)
 - [ ] More repeats per scenario, more models, and a missing-telemetry scenario

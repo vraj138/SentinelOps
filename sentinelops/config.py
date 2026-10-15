@@ -26,7 +26,14 @@ class Settings(BaseSettings):
         "postgresql://sentinelops:sentinelops@localhost:5433/sentinelops"
     )
     controlplane_url: str = "http://localhost:8080"
-    controlplane_poll_alerts: bool = True  # open incidents from firing alerts (free; no agent)
+    controlplane_poll_alerts: bool = True  # open incidents from firing alerts
+    incident_group_window_minutes: float = 5  # related alerts this close together: one incident
+
+    # Automatic investigation of incidents opened from alerts. Read-only, but it costs money.
+    auto_investigate: bool = True
+    investigation_concurrency: int = 2  # more wait in a queue
+    auto_investigate_daily_budget_usd: float = 2.0  # then incidents wait for a manual start
+    auto_investigate_repeat_hours: float = 24  # no automatic rerun for alerts it couldn't fix
 
     # Tool servers. The agent's tools may only see these locations.
     deploy_repo_path: Path = ROOT / "storage" / "deploy-repo"

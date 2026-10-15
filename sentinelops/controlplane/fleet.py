@@ -1,24 +1,28 @@
-"""Fleet views: every product's live health, its team, and its incidents.
+"""Fleet data: every product's live health, its team, and its incidents. No HTML here.
 
-Live health comes from Prometheus. If Prometheus can't be reached, the page says "metrics
-unavailable" instead of showing stale or invented numbers.
+Application services are measured from Prometheus. Shared infrastructure (Postgres) has no
+exporter in this stack, so its status comes from the container's own health check instead.
+If a source can't be reached, the status says so rather than showing stale or invented numbers.
 """
 
 import statistics
-from html import escape
 from typing import Any, Protocol
 
 from mcp_servers.common import ToolError
 from sentinelops.catalog import Product
 from sentinelops.controlplane.models import TERMINAL, Incident, State
-from sentinelops.controlplane.service import ControlPlane
 
 ERROR_RATIO_MAX = 0.05
 P95_MAX_SECONDS = 1.0
+SEVERITY = {"down": 3, "degraded": 2, "unknown": 1, "metrics unavailable": 1, "healthy": 0}
 
 
 class Metrics(Protocol):
     def query(self, promql: str) -> list[dict]: ...
+
+
+class Containers(Protocol):
+    def status(self, service: str) -> dict[str, Any]: ...
 
 
 def _value(metrics: Metrics, promql: str) -> float | None:
@@ -27,12 +31,14 @@ def _value(metrics: Metrics, promql: str) -> float | None:
 
 
 def service_health(metrics: Metrics, service: str) -> dict[str, Any]:
-    """Up, 5xx ratio and p95 over the last minute, and a status derived from them."""
+    """Up, request rate, 5xx ratio and p95 over the last minute, and a status from them."""
     up = _value(metrics, f'up{{job="demo",service="{service}"}}')
+    traffic = f'http_requests_total{{service="{service}",route!="/health"}}'
+    rps = _value(metrics, f"sum(rate({traffic}[1m]))")
     errors = _value(
         metrics,
         f'(sum(rate(http_requests_total{{service="{service}",status=~"5.."}}[1m])) or vector(0))'
-        f' / sum(rate(http_requests_total{{service="{service}",route!="/health"}}[1m]))',
+        f" / sum(rate({traffic}[1m]))",
     )
     p95 = _value(
         metrics,
@@ -45,20 +51,82 @@ def service_health(metrics: Metrics, service: str) -> dict[str, Any]:
         status = "degraded"
     else:
         status = "healthy"
-    return {"service": service, "status": status, "errors": errors, "p95": p95}
+    return {
+        "service": service,
+        "status": status,
+        "source": "prometheus",
+        "rps": rps,
+        "errors": errors,
+        "p95": p95,
+    }
 
 
-def product_health(metrics: Metrics | None, product: Product) -> tuple[str, list[dict[str, Any]]]:
-    """(overall status, per-service health). Never raises: unreachable metrics are a status."""
-    if metrics is None:
-        return "unknown", []
+def container_health(containers: Containers | None, service: str) -> dict[str, Any]:
+    """Status from Docker's view of the container and its health check (no metrics needed)."""
+    base = {"service": service, "source": "container health check"}
+    if containers is None:
+        return {**base, "status": "unknown", "detail": "no metrics exporter"}
     try:
-        services = [service_health(metrics, s) for s in product.services]
+        state = containers.status(service)
     except ToolError as exc:
-        return "metrics unavailable", [{"service": s, "status": str(exc)} for s in product.services]
-    statuses = {s["status"] for s in services}
-    overall = "down" if "down" in statuses else "degraded" if "degraded" in statuses else "healthy"
+        return {**base, "status": "unknown", "detail": str(exc)}
+    health = state.get("health")
+    if not state.get("running"):
+        status = "down"
+    elif health in ("unhealthy", "starting"):
+        status = "degraded"
+    else:
+        status = "healthy"
+    return {
+        **base,
+        "status": status,
+        "detail": f"{state.get('status')}, health check {health or 'none'}",
+        "container": state,
+    }
+
+
+def with_alerts(health: dict[str, Any], firing: list[str]) -> dict[str, Any]:
+    """A firing alert overrides a healthy reading: ServiceDown means down, others degraded."""
+    if not firing:
+        return health
+    floor = "down" if "ServiceDown" in firing else "degraded"
+    status = max(health["status"], floor, key=lambda st: SEVERITY.get(st, 1))
+    return {**health, "status": status, "alerts": firing}
+
+
+def product_health(
+    metrics: Metrics | None,
+    product: Product,
+    containers: Containers | None = None,
+    alerts: dict[str, list[str]] | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """(overall status, per-service health). Never raises: unreachable sources are a status.
+
+    `alerts` maps a service to the names of its firing alerts, so the status never says
+    healthy while an alert on that service is firing.
+    """
+    services = _service_health(metrics, product, containers)
+    if services is None:
+        return "unknown", []
+    services = [with_alerts(s, (alerts or {}).get(s["service"], [])) for s in services]
+    overall = max((s["status"] for s in services), key=lambda st: SEVERITY.get(st, 1))
     return overall, services
+
+
+def _service_health(
+    metrics: Metrics | None, product: Product, containers: Containers | None
+) -> list[dict[str, Any]] | None:
+    if product.infrastructure:
+        return [container_health(containers, s) for s in product.services]
+    if metrics is None:
+        return None
+    try:
+        return [service_health(metrics, s) for s in product.services]
+    except ToolError as exc:
+        return [
+            {"service": s, "status": "metrics unavailable", "detail": str(exc)}
+            for s in product.services
+        ]
 
 
 def incident_counts(incidents: list[Incident], product_id: str) -> dict[str, Any]:
@@ -81,90 +149,9 @@ def incident_counts(incidents: list[Incident], product_id: str) -> dict[str, Any
     }
 
 
-STATUS_CLASS = {"healthy": "ok", "degraded": "warn", "down": "bad"}
-
-
 def percent(value: float | None) -> str:
     return "-" if value is None else f"{value:.1%}"
 
 
 def seconds(value: float | None) -> str:
     return "-" if value is None else f"{value:.2f}s"
-
-
-def status_pill(status: str) -> str:
-    return f'<span class="pill {STATUS_CLASS.get(status, "muted")}">{escape(status)}</span>'
-
-
-def owner_label(plane: ControlPlane, incident: Incident) -> str:
-    if not incident.product:
-        return '<span class="muted">unassigned</span>'
-    product = plane.catalog.product(incident.product)
-    how = {
-        "alerts": "likely, from alerts",
-        "investigation": "from investigation",
-        "operator": "set by operator",
-    }.get(incident.owner_source or "", "")
-    return (
-        f'<a href="/products/{escape(product.id)}">{escape(product.name)}</a> '
-        f'<span class="muted">{escape(product.team)} &middot; {escape(how)}</span>'
-    )
-
-
-def render_fleet(plane: ControlPlane, metrics: Metrics | None, incidents: list[Incident]) -> str:
-    cards = []
-    for product in plane.catalog.products:
-        overall, services = product_health(metrics, product)
-        counts = incident_counts(incidents, product.id)
-        median = "-" if counts["median_minutes"] is None else f"{counts['median_minutes']:.1f} min"
-        service_rows = "".join(
-            f"<tr><td>{escape(s['service'])}</td><td>{status_pill(s['status'])}</td>"
-            f"<td>{percent(s.get('errors'))}</td><td>{seconds(s.get('p95'))}</td></tr>"
-            for s in services
-        )
-        cards.append(
-            f'<div class="card"><h2 style="margin-top:0"><a href="/products/{escape(product.id)}">'
-            f"{escape(product.name)}</a> {status_pill(overall)}</h2>"
-            f'<p class="muted">{escape(product.team)} &middot; {escape(product.description)}</p>'
-            f"<table><tr><th>service</th><th>status</th><th>5xx (1m)</th><th>p95 (1m)</th></tr>"
-            f"{service_rows}</table>"
-            f"<p><b>{counts['open']}</b> open &middot; "
-            f"<b>{counts['awaiting']}</b> awaiting approval "
-            f"&middot; {counts['resolved']} resolved &middot; {counts['escalated']} escalated "
-            f"&middot; median time to resolve {median}"
-            + (
-                f' &middot; <span class="warn">impacted by {counts["impacting"]} open incident(s) '
-                "owned elsewhere</span>"
-                if counts["impacting"]
-                else ""
-            )
-            + "</p></div>"
-        )
-    unassigned = sum(1 for i in incidents if not i.product)
-    note = (
-        f'<p class="muted">{unassigned} earlier test incident(s) predate the catalog and are '
-        'listed under <a href="/incidents">all incidents</a> as unassigned.</p>'
-        if unassigned
-        else ""
-    )
-    return "".join(cards) + note
-
-
-def render_fleet_product(
-    plane: ControlPlane, metrics: Metrics | None, product: Product, incidents: list[Incident]
-) -> str:
-    """The health table and counts for one product (used on the product page)."""
-    overall, services = product_health(metrics, product)
-    counts = incident_counts(incidents, product.id)
-    rows = "".join(
-        f"<tr><td>{escape(s['service'])}</td><td>{status_pill(s['status'])}</td>"
-        f"<td>{percent(s.get('errors'))}</td><td>{seconds(s.get('p95'))}</td></tr>"
-        for s in services
-    )
-    median = "-" if counts["median_minutes"] is None else f"{counts['median_minutes']:.1f} min"
-    return (
-        "<div class=card><table><tr><th>service</th><th>status</th><th>5xx (1m)</th>"
-        f"<th>p95 (1m)</th></tr>{rows}</table><p><b>{counts['open']}</b> open &middot; "
-        f"<b>{counts['awaiting']}</b> awaiting approval &middot; {counts['resolved']} resolved "
-        f"&middot; median time to resolve {median}</p></div>"
-    )

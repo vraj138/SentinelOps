@@ -19,26 +19,50 @@ class State(StrEnum):
     VERIFYING = "VERIFYING"
     RESOLVED = "RESOLVED"
     ESCALATED = "ESCALATED"
+    SELF_RESOLVED = "SELF_RESOLVED"  # the alert cleared before the investigation finished
 
 
-TERMINAL = {State.RESOLVED, State.ESCALATED}
+TERMINAL = {State.RESOLVED, State.ESCALATED, State.SELF_RESOLVED}
+# States a person may send back for a fresh investigation (nothing was executed yet).
+REINVESTIGABLE = {State.PROPOSED, State.ESCALATED, State.SELF_RESOLVED}
 
 # Allowed transitions. Anything not listed is refused by the store.
 TRANSITIONS: dict[State, set[State]] = {
     State.OPEN: {State.INVESTIGATING, State.PROPOSED, State.ESCALATED},
-    State.INVESTIGATING: {State.PROPOSED, State.ESCALATED},
-    State.PROPOSED: {State.APPROVED, State.ESCALATED},
+    State.INVESTIGATING: {State.PROPOSED, State.ESCALATED, State.SELF_RESOLVED},
+    State.PROPOSED: {State.APPROVED, State.ESCALATED, State.OPEN},
     State.APPROVED: {State.EXECUTING, State.ESCALATED},
     State.EXECUTING: {State.VERIFYING, State.ESCALATED},
     State.VERIFYING: {State.RESOLVED, State.ESCALATED},
     State.RESOLVED: set(),
-    State.ESCALATED: set(),
+    State.ESCALATED: {State.OPEN},  # re-investigate, only if no action was executed
+    State.SELF_RESOLVED: {State.OPEN},  # re-investigate
 }
 
 
 class Alert(BaseModel):
     name: str
     service: str | None
+    since: datetime | None = None  # Prometheus activeAt: when the alert went pending
+    summary: str = ""
+
+    @property
+    def key(self) -> tuple[str, str | None]:
+        return (self.name, self.service)
+
+
+class Investigation(BaseModel):
+    """Bookkeeping for the agent runs on one incident (the runs themselves are in the audit log)."""
+
+    status: Literal["queued", "running", "done", "waiting", "failed"] | None = None
+    trigger: Literal["auto", "manual"] | None = None
+    note: str | None = None  # why it is waiting, skipped or failed
+    runs: int = 0
+    queued_at: datetime | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    # From the moment the control plane saw the alert firing (incident creation) to the RCA.
+    alert_to_rca_seconds: float | None = None
 
 
 class ProposedAction(BaseModel):
@@ -103,3 +127,4 @@ class Incident(BaseModel):
     owner_source: Literal["alerts", "investigation", "operator"] | None = None
     impacted_products: list[str] = Field(default_factory=list)
     investigate_token: str = Field(default_factory=lambda: secrets.token_hex(16))
+    investigation: Investigation = Field(default_factory=Investigation)

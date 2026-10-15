@@ -1,0 +1,233 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status, incident_badge, when, cost, owner, routed_by, chart_panel %}
+{% block head %}{% if charts %}<link rel="stylesheet" href="/static/vendor/uplot/uPlot.min.css?v={{ asset_version }}">{% endif %}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ title }}</h1>
+    <div class="sub">
+      {{ incident_badge(incident) }}
+      <span class="mono">{{ incident.id }}</span>
+      <span>opened {{ when(incident.created_at) }}</span>
+      <span>{{ 'took' if terminal else 'open for' }} <span class="num">{{ duration }}</span></span>
+    </div>
+  </div>
+</div>
+
+<nav class="stepper" aria-label="Incident lifecycle">
+  {% for step in steps %}
+    {% if not loop.first %}<span class="step-line"></span>{% endif %}
+    <span class="step {{ step.status }}"><span class="mark">{% if step.status == 'done' %}✓{% elif step.status == 'failed' %}!{% endif %}</span>{{ step.label }}</span>
+  {% endfor %}
+</nav>
+
+<div class="layout-2col">
+<div>
+  {% set info = incident.investigation %}
+  {% if incident.state.value == 'ESCALATED' %}
+  <div class="callout bad">
+    <h3 class="bad">Escalated{% if owner_product %} to {{ owner_product.team }}{% endif %}</h3>
+    <p>{{ incident.escalation_reason }}</p>
+    <p class="dim">SentinelOps takes no further automatic action, and this version doesn't page anyone, so the owning team picks it up from here.{% if can_reinvestigate %} Someone can re-investigate it (nothing was executed).{% endif %} If the alert is still firing {{ cooldown_minutes }} minutes after the last update ({{ reopen_at.strftime('%H:%M') }} UTC), the control plane opens a new incident.</p>
+  </div>
+  {% elif incident.state.value == 'SELF_RESOLVED' %}
+  <div class="callout ok">
+    <h3>Self-resolved</h3>
+    <p class="dim">The alerts stopped firing before the investigation finished, so nothing is proposed. The analysis is kept below for the record.</p>
+  </div>
+  {% elif incident.state.value == 'RESOLVED' %}
+  <div class="callout ok"><h3>Resolved</h3><p class="dim">The approved action ran and every verification check passed.</p></div>
+  {% elif busy %}
+  <div class="callout info" data-poll-incident="{{ incident.id }}" data-state="{{ incident.state.value }}">
+    <h3><span class="spinner"></span> {{ incident.state.value.title() }}</h3>
+    <p class="dim">{{ busy_text }}{% if incident.state.value == 'INVESTIGATING' and info.trigger %} Started {{ 'automatically' if info.trigger == 'auto' else 'manually' }}.{% endif %} This page updates when the state changes.</p>
+  </div>
+  {% elif incident.state.value == 'OPEN' and info.status == 'queued' %}
+  <div class="callout info" data-poll-incident="{{ incident.id }}" data-state="{{ incident.state.value }}">
+    <h3>Queued for investigation</h3>
+    <p class="dim">{{ 'Queued automatically when the alert fired.' if info.trigger == 'auto' else 'Requested manually.' }}{% if queue %} {{ queue.running }} running, at most {{ queue.concurrency }} at a time; it starts when a slot frees.{% endif %} The agent only reads; any fix it proposes waits for your approval.</p>
+  </div>
+  {% elif incident.state.value == 'OPEN' %}
+  <div class="callout warn">
+    <h3>{{ 'Waiting for a manual start' if info.status == 'waiting' else 'Not investigated' }}</h3>
+    {% if info.note %}<p>{{ info.note }}</p>{% endif %}
+    {% if can_start %}
+    <p class="dim">The agent reads metrics, logs, container state, deploys and runbooks, then proposes one typed fix for your approval. Typically $0.10–0.30 per investigation.</p>
+    <form method="post" action="/incidents/{{ incident.id }}/investigate" class="inline-form">
+      <input type="hidden" name="token" value="{{ incident.investigate_token }}">
+      <button class="btn primary">Start investigation</button>
+    </form>
+    {% elif not agent_configured %}
+    <p class="dim">The agent isn't configured (no Anthropic credentials), so a human has to investigate. An operator can still propose a fix with <span class="mono">make incidents</span>.</p>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if incident.rca %}
+  {% set rca = incident.rca %}
+  <section class="panel">
+    <header class="panel-head">
+      <h2>Root cause analysis</h2>
+      <div class="tools"><span>service <span class="mono">{{ rca.root_cause_service }}</span></span><span class="badge {{ {'high': 'ok', 'medium': 'warn'}.get(rca.confidence, 'bad') }}">{{ rca.confidence }} confidence</span></div>
+    </header>
+    <div class="panel-body">
+      <div class="root-cause"><span class="label">Root cause</span>{{ rca.root_cause }}</div>
+      <p>{{ rca.summary }}</p>
+      <ul class="claims">
+        {% for c in rca.claims %}
+        <li>{{ c.statement }}{% for e in c.evidence %}<a class="ev" href="#{{ e }}">{{ e }}</a>{% endfor %}</li>
+        {% endfor %}
+      </ul>
+      {% if rca.data_gaps %}
+      <p class="dim tight">Could not check:</p>
+      <ul class="claims dim">{% for g in rca.data_gaps %}<li>{{ g }}</li>{% endfor %}</ul>
+      {% endif %}
+    </div>
+  </section>
+  {% endif %}
+
+  {% if incident.action and incident.proposal %}
+  <section class="panel">
+    <header class="panel-head">
+      <h2>Proposed action</h2>
+      <span class="meta">by {{ incident.proposal.proposed_by }}</span>
+      <div class="tools"><span class="mono" title="Approval is bound to exactly this change">fingerprint {{ incident.action.fingerprint[:12] }}</span></div>
+    </header>
+    <div class="panel-body">
+      <p class="first"><span class="badge info">{{ incident.action.kind }}</span> <span class="mono">{{ incident.action.target }}</span></p>
+      <p>{{ incident.proposal.reason }}</p>
+      <div class="diff">{% for line in diff %}<div class="{{ line.tone }}">{{ line.text }}</div>{% endfor %}</div>
+      {% if incident.state.value == 'PROPOSED' %}
+      <div class="approve-box">
+        <form method="post" action="/incidents/{{ incident.id }}/approve" class="inline-form">
+          <input type="hidden" name="fingerprint" value="{{ incident.action.fingerprint }}">
+          <input type="text" name="approver" placeholder="Your name" required autocomplete="name">
+          <button class="btn primary">Approve and execute</button>
+          <span class="faint">Runs this exact change, then verifies health and rolls back if it fails.</span>
+        </form>
+        <form method="post" action="/incidents/{{ incident.id }}/reject" class="inline-form">
+          <input type="text" name="approver" placeholder="Your name" required>
+          <input type="text" name="reason" placeholder="Reason" required class="wide">
+          <button class="btn danger">Reject</button>
+        </form>
+      </div>
+      {% endif %}
+      {% if incident.approval %}
+      <p class="dim">Approved by <b>{{ incident.approval.approver }}</b> at {{ incident.approval.at.strftime('%H:%M:%S') }} UTC.</p>
+      {% endif %}
+    </div>
+  </section>
+  {% endif %}
+
+  {% if incident.verification %}
+  <section class="panel">
+    <header class="panel-head"><h2>Verification</h2>{% if incident.rolled_back %}<span class="badge bad">rolled back</span>{% endif %}</header>
+    <div class="panel-body flush">
+      <table>
+        <tbody>
+        {% for c in incident.verification %}
+        <tr><td class="narrow"><span class="badge {{ 'ok' if c.ok else 'bad' }}">{{ 'PASS' if c.ok else 'FAIL' }}</span></td><td>{{ c.name }}</td><td class="dim">{{ c.detail }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% endif %}
+
+
+  {% if charts %}
+  <div class="section-title">Metrics around the incident <span class="dim">{{ charts.services | join(', ') }}, from 15 min before it opened</span></div>
+  <div class="dash" data-dashboard data-start="{{ charts.start }}" data-end="{{ charts.end }}"
+       data-colors="{{ colors | tojson | forceescape }}" data-markers="{{ [{'t': charts.marker, 'label': 'opened'}] | tojson | forceescape }}">
+    {% for panel in chart_panels %}{{ chart_panel(panel, charts.services, small=True) }}{% endfor %}
+  </div>
+  {% endif %}
+
+  <section class="panel spaced">
+    <header class="panel-head"><h2>Alert</h2><span class="meta">what the agent was given</span></header>
+    <div class="panel-body"><pre class="block">{{ incident.alert_context }}</pre></div>
+  </section>
+
+  {% if tools %}
+  <section class="panel evidence">
+    <header class="panel-head"><h2>Evidence</h2><span class="meta">{{ tools | length }} tool calls, all read-only</span></header>
+    <div class="panel-body flush">
+      {% for t in tools %}
+      <details id="{{ t.id }}">
+        <summary>
+          <span class="ev">{{ t.id }}</span>
+          <span class="mono">{{ t.tool }}</span>
+          <span class="faint mono args">{{ t.get('arguments', {}) | tojson }}</span>
+          {% if t.is_error %}<span class="badge bad push">error</span>{% endif %}
+        </summary>
+        <div class="detail"><pre class="block">{{ (t.get('result') | string)[:6000] }}</pre></div>
+      </details>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+</div>
+
+<aside>
+  <section class="panel">
+    <header class="panel-head"><h3>Details</h3></header>
+    <div class="panel-body">
+      <dl class="kv">
+        <dt>Owner</dt><dd>{{ owner(incident, catalog) }}</dd>
+        <dt>Routing</dt><dd>{{ routed_by(incident) }}</dd>
+        <dt>Also impacted</dt><dd>{{ impacted | join(', ') if impacted else '-' }}</dd>
+        <dt>Alerts</dt><dd>{% for name, services in alert_groups %}<div><span class="mono">{{ name }}</span> <span class="dim">{{ services | join(', ') }}</span></div>{% else %}-{% endfor %}</dd>
+        <dt>Opened</dt><dd>{{ when(incident.created_at) }}</dd>
+        <dt>Updated</dt><dd>{{ when(incident.updated_at) }}</dd>
+      </dl>
+    </div>
+  </section>
+
+  {% if stats or info.status or can_reinvestigate %}
+  <section class="panel">
+    <header class="panel-head"><h3>Investigation</h3>{% if info.status %}<span class="meta">{{ info.status }}</span>{% endif %}</header>
+    <div class="panel-body">
+      <dl class="kv">
+        <dt>Trigger</dt><dd>{{ {'auto': 'automatic', 'manual': 'manual'}.get(info.trigger, '-') }}</dd>
+        {% if info.alert_to_rca_seconds is not none %}<dt>Alert → RCA</dt><dd class="num" title="From the moment the control plane saw the alert firing to the finished analysis">{{ human_seconds(info.alert_to_rca_seconds) }}</dd>{% endif %}
+        {% if stats %}
+        <dt>Model</dt><dd class="mono">{{ stats.models | join(', ') }}</dd>
+        <dt>Model calls</dt><dd class="num">{{ stats.llm_calls }}</dd>
+        <dt>Tool calls</dt><dd class="num">{{ stats.tool_calls }} ({{ stats.tool_errors }} failed)</dd>
+        <dt>Tokens</dt><dd class="num">{{ '{:,}'.format(stats.tokens) }}</dd>
+        <dt>Cost</dt><dd class="num">{{ cost(stats) }}</dd>
+        <dt>Time</dt><dd class="num">{{ '-' if stats.seconds is none else '%.0fs' | format(stats.seconds) }}</dd>
+        {% if stats.runs > 1 %}<dt>Runs</dt><dd class="num">{{ stats.runs }} (cost is the total)</dd>{% endif %}
+        {% endif %}
+      </dl>
+      {% if can_reinvestigate %}
+      <form method="post" action="/incidents/{{ incident.id }}/investigate" class="inline-form spaced">
+        <input type="hidden" name="token" value="{{ incident.investigate_token }}">
+        <button class="btn">Re-investigate</button>
+        <span class="faint small">a new paid run; clears the current proposal</span>
+      </form>
+      {% endif %}
+    </div>
+  </section>
+  {% endif %}
+
+  <section class="panel">
+    <header class="panel-head"><h3>Timeline</h3><span class="meta">UTC</span></header>
+    <div class="panel-body">
+      <ol class="timeline">
+        <li><span class="mono dim">{{ incident.created_at.strftime('%H:%M:%S') }}</span><span>Opened</span></li>
+        {% for h in history %}
+        <li><span class="mono dim">{{ h.at }}</span><span>{{ h.label }}</span></li>
+        {% endfor %}
+      </ol>
+    </div>
+  </section>
+</aside>
+</div>
+{% endblock %}
+{% block scripts %}
+{% if charts %}
+<script src="/static/vendor/uplot/uPlot.iife.min.js?v={{ asset_version }}"></script>
+<script src="/static/charts.js?v={{ asset_version }}"></script>
+{% endif %}
+{% endblock %}

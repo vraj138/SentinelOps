@@ -25,11 +25,11 @@ make fault NAME=bad_deploy VARIANT=c
 > "A bad payments release, and 30 seconds later a harmless gateway deploy. The newest change is
 > a red herring." Show the alerts firing on gateway, orders and payments.
 
-**3. The agent investigates (0:40-1:30).**
-```bash
-make investigate
-```
-> "It reads alerts, metrics, logs and deploy history through read-only MCP tools. Every claim
+**3. The agent investigates (0:40-1:30).** With the control plane running, the alerts open one
+incident and the investigation starts by itself (or run `make investigate` without it).
+> "Three services are alerting, but it's one incident and one investigation. Nobody clicked
+> anything: investigating is read-only, so it starts at once; only the fix waits for me.
+> It reads alerts, metrics, logs and deploy history through read-only MCP tools. Every claim
 > cites the tool call it came from." Open the incident page: point at the claims, click an
 > evidence chip (for example T4) to show the raw tool output, and at the cost card.
 > "It ignored the most recent deploy because the errors started before it."

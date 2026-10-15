@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Benchmark</h1>
+    <div class="sub">
+      {% if summary %}<span class="num">{{ line_count }} result lines from <span class="mono">{{ results_name }}</span></span>{% endif %}
+      <span>only runs where the injected fault produced an alert are scored</span>
+    </div>
+  </div>
+</div>
+{% if not summary %}
+<div class="panel"><div class="panel-body">
+  <p class="first">No benchmark results yet.</p>
+  <p class="dim">Run <span class="mono">make bench-dry</span> (free, scripted model) or <span class="mono">make bench ARGS=--confirm-spend</span>; results appear here.</p>
+</div></div>
+{% else %}
+<div class="panel"><div class="panel-body flush">
+<table>
+  <thead><tr><th>Metric</th>{% for s in systems %}<th class="r" title="{{ s }}">{{ system_labels.get(s, s) }}</th>{% endfor %}</tr></thead>
+  <tbody>
+  {% for m in metrics %}
+  <tr><td>{{ m }}</td>{% for s in systems %}<td class="r num nowrap">{{ summary[s].get(m, '-') }}</td>{% endfor %}</tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div></div>
+
+<div class="section-title">Per scenario <span class="dim">SentinelOps' proposed action, graded against the answer key</span></div>
+<div class="panel"><div class="panel-body flush">
+<table>
+  <thead><tr><th>Scenario</th><th>Grade per run</th></tr></thead>
+  <tbody>
+  {% for scenario, grades in per_scenario %}
+  <tr><td class="mono">{{ scenario }}</td><td>{{ grades | join(', ') }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div></div>
+{% endif %}
+{% endblock %}

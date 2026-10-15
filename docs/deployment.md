@@ -49,7 +49,12 @@ All settings are environment variables (or `.env`, which is git-ignored).
 | `PROMETHEUS_URL` | `http://localhost:9090` | metrics and alerts |
 | `CONTROLPLANE_DATABASE_URL` | Postgres on `localhost:5433` | incident state (not the demo app's database) |
 | `CONTROLPLANE_URL` | `http://localhost:8080` | used in links printed by the CLI |
-| `CONTROLPLANE_POLL_ALERTS` | `true` | open incidents from firing alerts automatically (no agent runs) |
+| `CONTROLPLANE_POLL_ALERTS` | `true` | open incidents from firing alerts automatically |
+| `INCIDENT_GROUP_WINDOW_MINUTES` | `5` | related alerts that start this close together become one incident |
+| `AUTO_INVESTIGATE` | `true` | start a read-only investigation for each new incident (costs money; needs Anthropic credentials) |
+| `INVESTIGATION_CONCURRENCY` | `2` | investigations running at once; more wait in a queue |
+| `AUTO_INVESTIGATE_DAILY_BUDGET_USD` | `2.0` | spend per UTC day on automatic runs; then incidents wait for a manual start |
+| `AUTO_INVESTIGATE_REPEAT_HOURS` | `24` | no automatic rerun for alerts an investigation escalated or self-resolved this recently |
 | `DEPLOY_REPO_PATH` | `storage/deploy-repo` | git repo of release settings ("what changed") |
 | `FLAGS_PATH` | `storage/flags/flags.json` | feature flags file |
 | `CONTAINER_EVENTS_PATH` | `storage/events/containers.jsonl` | container lifecycle log |
@@ -108,5 +113,6 @@ can be moved closer to the system it reads without changing the agent.
 
 See the README's Results section and [design doc section 7](design.md#7-evaluation-plan).
 `make bench-dry` is free and checks the harness. Paid steps all require `--confirm-spend`.
-Stop the control plane while benchmarking: its alert intake would open incidents for every
-injected fault (harmless, but it clutters the incident list).
+Stop the control plane while benchmarking: its alert intake would open an incident for every
+injected fault and, with `AUTO_INVESTIGATE=true`, pay for an investigation of each one on top of
+the benchmark's own runs.
